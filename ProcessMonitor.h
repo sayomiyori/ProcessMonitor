@@ -21,7 +21,7 @@
 #include <cwctype>
 
 
-// Константы для окон
+// Constants for windows
 #define IDC_PROCESS_LIST 1001
 #define IDC_MODULE_LIST 1002
 #define IDC_TAB_CONTROL 1003
@@ -29,7 +29,7 @@
 #define IDC_KILL_BTN 1005
 #define IDM_PROCESS_MENU 2000
 
-// Структура для процесса
+// Structure for the process
 struct ProcessInfo {
     DWORD pid;
     DWORD parentPid;
@@ -41,7 +41,7 @@ struct ProcessInfo {
     DWORD priority;
 };
 
-// Функции
+// Func
 BOOL InitApplication(HINSTANCE hInstance);
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow);
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);

@@ -1,7 +1,6 @@
 ﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-// ТОЛЬКО библиотеки, НИКАКИХ pragma для линкера
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -19,7 +18,7 @@
 #include <tlhelp32.h>
 #include "ProcessMonitor.h"
 
-//Глобальные переменные 
+//Global variables
 HWND g_hMainWnd = NULL;
 HWND g_hProcessList = NULL;
 HWND g_hModuleList = NULL;
@@ -29,9 +28,9 @@ std::vector<ProcessInfo> g_processes;
 std::map<DWORD, std::vector<std::wstring>> g_processModules;
 HINSTANCE g_hInstance;
 
-//Точка входа
+//Entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-	//Инициализируем common controls
+	//Initializing common controls
 	INITCOMMONCONTROLSEX icex;
 	icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
 	icex.dwICC = ICC_WIN95_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES;
@@ -45,7 +44,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		return FALSE;
 	}
 
-	//Главный цикл сообщений
+	//The main message loop
 	MSG msg;
 	HACCEL hAccelTable = NULL;
 
@@ -59,7 +58,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	return (int)msg.wParam;
 }
 
-//Регистрация класса окна
+//Window Class Registration
 BOOL InitApplication(HINSTANCE hInstance) {
 	WNDCLASSEXW wcex;
 	wcex.cbSize = sizeof(WNDCLASSEXW);
@@ -78,7 +77,7 @@ BOOL InitApplication(HINSTANCE hInstance) {
 	return RegisterClassExW(&wcex);
 }
 
-//Создание main window
+//Creating main window
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 	g_hInstance = hInstance;
 
@@ -93,12 +92,12 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		return FALSE;
 	}
 
-	ShowWindow(g_hMainWnd, nCmdShow);  // <-- ДОБАВЬТЕ
-	UpdateWindow(g_hMainWnd);          // <-- ДОБАВЬТЕ
+	ShowWindow(g_hMainWnd, nCmdShow);  
+	UpdateWindow(g_hMainWnd);          
 	return TRUE;
 }
 
-//Главная оконная процедура
+//Main window procedure
 	LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 		switch (message) 
@@ -108,9 +107,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			EnableDebugPrivilege();
 			RefreshProcessList(g_hProcessList);
 			{
-				std::wstring status = L"Готово. Загружено процессов: " +
+				std::wstring status = L"Done. Downloaded processes: " +
 					std::to_wstring(g_processes.size());
-				UpdateStatusBar(status.c_str());  // <-- ИСПРАВЛЕНО: добавлено .c_str()
+				UpdateStatusBar(status.c_str());  
 			}
 			break;
 
@@ -119,17 +118,17 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			RECT rcClient;
 			GetClientRect(hWnd, &rcClient);
 
-			// Размещаем статус бар внизу
+			// Place the status bar at the bottom
 			if (g_hStatusBar)
 			{
 				SendMessage(g_hStatusBar, WM_SIZE, 0, 0);
 
-				// Получаем высоту статус-бара
+				// Getting the height of the status bar
 				RECT rcStatus;
 				GetWindowRect(g_hStatusBar, &rcStatus);
 				int statusHeight = rcStatus.bottom - rcStatus.top;
 
-				// Находим панель кнопок
+				//Find the button panel
 				HWND hButtonPanel = FindWindowEx(hWnd, NULL, L"STATIC", NULL);
 				int buttonPanelHeight = 0;
 				if (hButtonPanel) {
@@ -137,20 +136,20 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 					GetWindowRect(hButtonPanel, &rcPanel);
 					buttonPanelHeight = rcPanel.bottom - rcPanel.top;
 
-					// Размещаем панель кнопок
+					// Placing the button panel
 					SetWindowPos(hButtonPanel, NULL, 0, 0, rcClient.right, buttonPanelHeight, SWP_NOZORDER);
 				}
 
-				// Размещаем Tab Control (между панелью кнопок и статус-баром)
+				// Place Tab Control (between the button panel and the status bar)
 				if (g_hTabControl)
 				{
 					SetWindowPos(g_hTabControl, NULL,
-						0, buttonPanelHeight,  // Отступ сверху = высота панели кнопок
+						0, buttonPanelHeight,  // Top margin = height of the button panel
 						rcClient.right,
 						rcClient.bottom - buttonPanelHeight - statusHeight,
 						SWP_NOZORDER);
 
-					// Размещаем ListView внутри TAB
+					// Placing the ListView inside the TAB
 					RECT rcTab;
 					GetClientRect(g_hTabControl, &rcTab);
 					TabCtrl_AdjustRect(g_hTabControl, FALSE, &rcTab);
@@ -177,7 +176,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		{
 			LPNMHDR lpnmh = (LPNMHDR)lParam;
 
-			// Обработка кликов по ListView
+			// ListView click processing
 			if (lpnmh->idFrom == IDC_PROCESS_LIST &&
 				lpnmh->code == LVN_ITEMCHANGED)
 			{
@@ -194,7 +193,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				}
 			}
 
-			//Обработка смены вкладок
+			//Tab change processing
 			else if (lpnmh->idFrom == IDC_TAB_CONTROL &&
 				lpnmh->code == TCN_SELCHANGE) 
 			{
@@ -213,19 +212,19 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
 		case WM_CONTEXTMENU:
 		{
-			// Проверяем, было ли меню вызвано для ListView процессов
+			// Checking whether the menu has been called for the ListView of processes
 			if ((HWND)wParam == g_hProcessList) {
-				// Получаем координаты курсора
+				// Getting the cursor coordinates
 				POINT pt;
 				pt.x = LOWORD(lParam);
 				pt.y = HIWORD(lParam);
 
-				// Если координаты = -1, значит было нажатие правой кнопкой на элементе
+				// If coordinates = -1, it means there was a right-click on the element
 				if (pt.x == -1 && pt.y == -1) {
-					// Получаем выбранный элемент
+					// Getting the selected item
 					int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
 					if (selected != -1) {
-						// Получаем координаты выбранного элемента
+						// Getting the coordinates of the selected element
 						RECT rc;
 						ListView_GetItemRect(g_hProcessList, selected, &rc, LVIR_BOUNDS);
 						pt.x = rc.left;
@@ -233,7 +232,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 						ClientToScreen(g_hProcessList, &pt);
 					}
 					else {
-						// Если ничего не выбрано, используем текущую позицию курсора
+						// If nothing is selected, use the current cursor position
 						GetCursorPos(&pt);
 					}
 				}
@@ -252,8 +251,8 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				RefreshProcessList(g_hProcessList);
 				{
 					wchar_t statusBuffer[256];
-					swprintf_s(statusBuffer, L"Список обновлен. Процессов: %zu", g_processes.size());
-					UpdateStatusBar(statusBuffer);  // Правильно - передаем wchar_t*
+					swprintf_s(statusBuffer, L"List updated. Processes: %zu", g_processes.size());
+					UpdateStatusBar(statusBuffer); 
 				}
 				break;
 
@@ -261,39 +260,39 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				KillSelectedProcess();
 				break;
 
-				// Обработка пунктов контекстного меню
-			case IDM_PROCESS_MENU + 1:  // Обновить
+				// Processing context menu items
+			case IDM_PROCESS_MENU + 1:  
 				RefreshProcessList(g_hProcessList);
 				{
-					std::wstring status = L"Список обновлен. Процессов: " +
+					std::wstring status = L"List updated. Processes: " +
 						std::to_wstring(g_processes.size());
 					UpdateStatusBar(status.c_str());
 				}
 				break;
 
-			case IDM_PROCESS_MENU + 2:  // Завершить процесс
+			case IDM_PROCESS_MENU + 2:  // End the process
 				KillSelectedProcess();
 				break;
 
-			case IDM_PROCESS_MENU + 3:  // Завершить дерево процессов
+			case IDM_PROCESS_MENU + 3:  // Complete the process tree
 				MessageBox(hWnd, L"Функция 'Завершить дерево процессов' в разработке",
 					L"Информация", MB_OK | MB_ICONINFORMATION);
 				break;
 
-			case IDM_PROCESS_MENU + 4:  // Свойства процесса
+			case IDM_PROCESS_MENU + 4:  // Process Properties
 				ShowProcessProperties(hWnd);
 				break;
 
-			case IDM_PROCESS_MENU + 5:  // Показать модули
+			case IDM_PROCESS_MENU + 5:  // Show modules
 				ShowSelectedProcessModules();
 				break;
 
-			case IDM_PROCESS_MENU + 6:  // Экспорт списка
+			case IDM_PROCESS_MENU + 6:  // Exporting a list
 				ExportProcessList();
 				break;
 
 			default:
-				// Обработка других команд
+				// Processing other commands
 				break;
 			}
 			break;
@@ -310,7 +309,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		return 0;
 	}
 
-	// Показать свойства процесса (заглушка)
+	// Show process properties (stub)
 	void ShowProcessProperties(HWND hWnd) {
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
 		if (selected == -1) {
@@ -322,7 +321,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		wchar_t procName[256];
 		ListView_GetItemText(g_hProcessList, selected, 1, procName, 256);
 
-		// Получаем PID
+		// Getting the PID
 		LVITEM lvi;
 		ZeroMemory(&lvi, sizeof(LVITEM));
 		lvi.iItem = selected;
@@ -336,7 +335,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		}
 	}
 
-	// Показать модули выбранного процесса
+	// Show the modules of the selected process
 	void ShowSelectedProcessModules() {
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
 		if (selected == -1) {
@@ -345,7 +344,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			return;
 		}
 
-		// Получаем PID
+		// Getting PID
 		LVITEM lvi;
 		ZeroMemory(&lvi, sizeof(LVITEM));
 		lvi.iItem = selected;
@@ -353,42 +352,42 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
 		if (ListView_GetItem(g_hProcessList, &lvi)) {
 			DWORD pid = (DWORD)lvi.lParam;
-			// Переключаемся на вкладку модулей
+			// Switch to the modules tab
 			TabCtrl_SetCurSel(g_hTabControl, 1);
 			ShowProcessModules(g_hModuleList, pid);
 
-			// Показываем модули и скрываем процессы
+			// Showing modules and hiding processes
 			ShowWindow(g_hProcessList, SW_HIDE);
 			ShowWindow(g_hModuleList, SW_SHOW);
 
-			// Обновляем статус
-			std::wstring status = L"Модули процесса PID: " + std::to_wstring(pid);
+			// Updating status
+			std::wstring status = L"Process Modules PID: " + std::to_wstring(pid);
 			UpdateStatusBar(status.c_str());
 		}
 	}
 
-	// Экспорт списка процессов (заглушка)
+	// Exporting a list of processes (stub)
 	void ExportProcessList() {
-		MessageBox(g_hMainWnd, L"Функция экспорта в разработке",
-			L"Информация", MB_OK | MB_ICONINFORMATION);
+		MessageBox(g_hMainWnd, L"Export function in development",
+			L"Info", MB_OK | MB_ICONINFORMATION);
 	}
 
-	// Функция для отображения контекстного меню
+	// A function for displaying the context menu
 	void ShowContextMenu(HWND hWnd, int x, int y) {
 		HMENU hMenu = CreatePopupMenu();
 		if (!hMenu) return;
 
-		// Добавляем пункты меню
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 1, L"Обновить");
+		// Adding menu items
+		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 1, L"Update");
 		AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 2, L"Завершить процесс");
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 3, L"Завершить дерево процессов");
+		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 2, L"End the process");
+		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 3, L"Complete the process tree");
 		AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 4, L"Свойства процесса");
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 5, L"Показать модули (DLL)");
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 6, L"Экспорт списка...");
+		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 4, L"Process Properties");
+		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 5, L"Show modules (DLL)");
+		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 6, L"Exporting the list...");
 
-		// Показываем меню
+		//Show menu
 		TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
 			x, y, 0, hWnd, NULL);
 
@@ -396,55 +395,55 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 	}
 
 
-	//Создание элементов управления в главном окне
-	//Создание элементов управления в главном окне
+	//Creating controls in the main window
+	
 	void CreateMainWindowControls(HWND hWnd) {
 		RECT rcClient;
 		GetClientRect(hWnd, &rcClient);
 
-		// Создаем панель для кнопок НАД Tab Control
+		// Creating a panel for buttons ABOVE the Tab Control
 		HWND hButtonPanel = CreateWindow(L"STATIC", L"",
 			WS_CHILD | WS_VISIBLE | SS_LEFT,
 			0, 0, rcClient.right, 30,
 			hWnd, NULL, g_hInstance, NULL);
 
 		if (hButtonPanel) {
-			// Устанавливаем цвет фона для панели кнопок (опционально)
+			// Setting the background color for the button panel (optional)
 			SendMessage(hButtonPanel, WM_SETFONT,
 				(WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 		}
 
-		// Создаем кнопки НАД панели кнопок
-		CreateWindow(L"BUTTON", L"Обновить",
+		// Creating buttons ABOVE the button panel
+		CreateWindow(L"BUTTON", L"Update",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
 			10, 5, 80, 25, hButtonPanel, (HMENU)IDC_REFRESH_BTN,
 			g_hInstance, NULL);
 
-		CreateWindow(L"BUTTON", L"Завершить",
+		CreateWindow(L"BUTTON", L"Close",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
 			100, 5, 80, 25, hButtonPanel, (HMENU)IDC_KILL_BTN,
 			g_hInstance, NULL);
 
-		// Создаем Tab Control ПОД панелью кнопок
+		// Creating a Tab Control UNDER the button panel
 		g_hTabControl = CreateWindowEx(0, WC_TABCONTROL, L"",
 			WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
-			0, 30,  // Отступ сверху = высота панели кнопок
-			rcClient.right, rcClient.bottom - 55, // Минус высота панели кнопок и статус бара
+			0, 30, // Top margin = height of the button panel
+			rcClient.right, rcClient.bottom - 55, // Minus the height of the button panel and the status of the bar
 			hWnd, (HMENU)IDC_TAB_CONTROL,
 			g_hInstance, NULL);
 
 		if (!g_hTabControl) {
-			MessageBox(hWnd, L"Не удалось создать Tab Control", L"Ошибка", MB_OK);
+			MessageBox(hWnd, L"Couldn't create Tab Control", L"Error", MB_OK);
 			return;
 		}
 
-		// Добавляем вкладки
+		// Adding tabs
 		TCITEM tie;
 		ZeroMemory(&tie, sizeof(TCITEM));
 		tie.mask = TCIF_TEXT;
 
-		wchar_t tabProcesses[] = L"Процессы";
-		wchar_t tabModules[] = L"Модули (DLL)";
+		wchar_t tabProcesses[] = L"Processes";
+		wchar_t tabModules[] = L"Modules (DLL)";
 
 		tie.pszText = tabProcesses;
 		TabCtrl_InsertItem(g_hTabControl, 0, &tie);
@@ -452,7 +451,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		tie.pszText = tabModules;
 		TabCtrl_InsertItem(g_hTabControl, 1, &tie);
 
-		// Создаем ListView для процессов ВНУТРИ Tab Control
+		// Creating a ListView for processes INSIDE Tab Control
 		RECT rcTab;
 		GetClientRect(g_hTabControl, &rcTab);
 		TabCtrl_AdjustRect(g_hTabControl, FALSE, &rcTab);
@@ -466,30 +465,30 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			g_hInstance, NULL);
 
 		if (!g_hProcessList) {
-			MessageBox(hWnd, L"Не удалось создать список процессов", L"Ошибка", MB_OK);
+			MessageBox(hWnd, L"Failed to create a list of processes", L"Error", MB_OK);
 			return;
 		}
 
 		ApplyListViewStyle(g_hProcessList);
 
-		// Настраиваем колонки для списка процессов
+		//Setting up columns for the process list
 		LVCOLUMN lvc;
 		ZeroMemory(&lvc, sizeof(LVCOLUMN));
 		lvc.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
 
-		// Создаем заголовки для 6 колонок
+		// Creating headings for 6 columns
 		wchar_t* columnTitles[] = {
 			const_cast<wchar_t*>(L"PID"),
-			const_cast<wchar_t*>(L"Имя процесса"),
-			const_cast<wchar_t*>(L"Пользователь"),
-			const_cast<wchar_t*>(L"Память (MB)"),
-			const_cast<wchar_t*>(L"Потоки"),
-			const_cast<wchar_t*>(L"Путь")
+			const_cast<wchar_t*>(L"Process Name"),
+			const_cast<wchar_t*>(L"User"),
+			const_cast<wchar_t*>(L"Memory (MB)"),
+			const_cast<wchar_t*>(L"Threads "),
+			const_cast<wchar_t*>(L"Path")
 		};
 
 		int columnWidths[] = { 80, 200, 150, 100, 80, 350 };
 
-		// Вставляем 6 колонок
+		// We insert 6 columns
 		for (int i = 0; i < 6; i++) {
 			lvc.iSubItem = i;
 			lvc.pszText = columnTitles[i];
@@ -498,7 +497,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			ListView_InsertColumn(g_hProcessList, i, &lvc);
 		}
 
-		// Создаем ListView для модулей (скрытый пока)
+		// Creating a ListView for modules (hidden for now)
 		g_hModuleList = CreateWindowEx(0, WC_LISTVIEW, L"",
 			WS_CHILD | WS_BORDER | LVS_REPORT,
 			rcTab.left, rcTab.top,
@@ -508,15 +507,15 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			g_hInstance, NULL);
 
 		if (!g_hModuleList) {
-			MessageBox(hWnd, L"Не удалось создать список модулей", L"Ошибка", MB_OK);
+			MessageBox(hWnd, L"Couldn't create a list of modules", L"Error", MB_OK);
 			return;
 		}
 
 		ApplyListViewStyle(g_hModuleList);
 
-		// Настраиваем колонки для модулей (2 колонки)
-		wchar_t colModuleName[] = L"Имя модуля";
-		wchar_t colModulePath[] = L"Путь";
+		// Setting up the speakers for the modules (2 speakers)
+		wchar_t colModuleName[] = L"Module Name";
+		wchar_t colModulePath[] = L"Path";
 
 		lvc.iSubItem = 0;
 		lvc.pszText = colModuleName;
@@ -528,16 +527,16 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		lvc.cx = 500;
 		ListView_InsertColumn(g_hModuleList, 1, &lvc);
 
-		// Скрываем модули изначально
+		// Hiding the modules initially
 		ShowWindow(g_hModuleList, SW_HIDE);
 
-		// Создаем статус бар
+		// Creating a status bar
 		g_hStatusBar = CreateWindowEx(0, STATUSCLASSNAME, NULL,
 			WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 			0, 0, 0, 0, hWnd, NULL, g_hInstance, NULL);
 
 		if (!g_hStatusBar) {
-			MessageBox(hWnd, L"Не удалось создать статус бар", L"Ошибка", MB_OK);
+			MessageBox(hWnd, L"Couldn't create a status bar", L"Error", MB_OK);
 			return;
 		}
 
@@ -545,14 +544,14 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		SendMessage(g_hStatusBar, SB_SETPARTS, 3, (LPARAM)parts);
 	}
 
-	//Применение стилей к ListView
+	//Applying styles to a ListView
 	void ApplyListViewStyle(HWND hListView) {
 		ListView_SetExtendedListViewStyle(hListView,
 			LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 
 	}
 
-	//Получение списка процессов
+	//Getting a list of processes
 	std::vector<ProcessInfo> GetProcessesList() {
 		std::vector<ProcessInfo> processes;
 
@@ -572,34 +571,34 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				info.name = processEntry.szExeFile;
 				info.threadCount = processEntry.cntThreads;
 
-				// Получаем дополнительную информацию
+				//Getting additional information
 				HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION |
 					PROCESS_VM_READ,
 					FALSE, info.pid);
 
 				if (hProcess) {
-					// Полный путь
+					// Full path
 					wchar_t path[MAX_PATH];
 					if (GetModuleFileNameExW(hProcess, NULL, path, MAX_PATH)) {
 						info.fullPath = path;
 					}
 
-					// Использование памяти
+					//Memory usage
 					PROCESS_MEMORY_COUNTERS pmc;
 					if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
 						info.workingSetSize = pmc.WorkingSetSize / (1024 * 1024); // MB
 					}
 
-					// Приоритет
+					//Priority
 					info.priority = GetPriorityClass(hProcess);
 
-					// Имя пользователя (добавлено)
+					// User name 
 					info.userName = GetProcessUserName(info.pid);
 
 					CloseHandle(hProcess);
 				}
 				else {
-					// Если не удалось открыть процесс, все равно получаем имя пользователя
+					// If the process could not be opened, we still get the username
 					info.userName = GetProcessUserName(info.pid);
 				}
 
@@ -609,7 +608,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
 		CloseHandle(snapshot);
 
-		// Сортируем по имени процесса
+		// Sorting by process name
 		std::sort(processes.begin(), processes.end(),
 			[](const ProcessInfo& a, const ProcessInfo& b) {
 				return a.name < b.name;
@@ -618,10 +617,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		return processes;
 	}
 
-	// ============ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИМЕНИ ПОЛЬЗОВАТЕЛЯ ПРОЦЕССА ============
+	// ============ A FUNCTION FOR GETTING THE USERNAME OF A PROCESS ============
 
 	std::wstring GetProcessUserName(DWORD pid) {
-		// Специальные системные процессы
+		//Special system processes
 		if (pid == 0) return L"SYSTEM (Idle)";
 		if (pid == 4) return L"SYSTEM";
 
@@ -637,18 +636,18 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		HANDLE hToken = NULL;
 		std::wstring username = L"Unknown";
 
-		// Пытаемся открыть токен процесса
+		// Trying to open the process token
 		if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) {
 			DWORD tokenInfoSize = 0;
 
-			// 1. Сначала получаем размер буфера
+			// 1. First, we get the buffer size
 			GetTokenInformation(hToken, TokenUser, NULL, 0, &tokenInfoSize);
 
 			if (tokenInfoSize > 0) {
-				// 2. Выделяем память для информации о токене
+				// 2. Allocating memory for information about the token
 				PTOKEN_USER pTokenUser = (PTOKEN_USER)malloc(tokenInfoSize);
 				if (pTokenUser) {
-					// 3. Получаем информацию о пользователе токена
+					// 3. Getting information about the token user
 					if (GetTokenInformation(hToken, TokenUser, pTokenUser,
 						tokenInfoSize, &tokenInfoSize)) {
 
@@ -658,7 +657,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 						DWORD domainSize = 256;
 						SID_NAME_USE sidType;
 
-						// 4. Преобразуем SID в читаемое имя
+						// 4. Converting the SID to a readable name
 						if (LookupAccountSid(NULL, pTokenUser->User.Sid,
 							name, &nameSize, domain, &domainSize, &sidType)) {
 
@@ -670,7 +669,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 							}
 						}
 						else {
-							// Не удалось преобразовать SID в имя
+							//Couldn't convert SID to name
 							username = L"SYSTEM";
 						}
 					}
@@ -678,14 +677,14 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				}
 			}
 			else {
-				// Не удалось получить информацию о токене
+				// Couldn't get information about the token
 				username = L"SYSTEM";
 			}
 
 			CloseHandle(hToken);
 		}
 		else {
-			// Не удалось открыть токен
+			// Couldn't open the token
 			username = L"SYSTEM";
 		}
 
@@ -694,35 +693,35 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 	}
 
 
-	// Обновление списка процессов в ListView
+	// Updating the list of processes in the ListView
 	void RefreshProcessList(HWND hList) {
-		// Очищаем список
+		//Clearing the list
 		ListView_DeleteAllItems(hList);
 
-		// Получаем актуальный список процессов
+		//We get an up-to-date list of processes
 		g_processes = GetProcessesList();
 
-		// Заполняем ListView
+		//Filling in the ListView
 		for (size_t i = 0; i < g_processes.size(); i++) {
 			const ProcessInfo& proc = g_processes[i];
 
 			LVITEM lvi;
-			ZeroMemory(&lvi, sizeof(LVITEM));  // Важно: обнуляем структуру
+			ZeroMemory(&lvi, sizeof(LVITEM));  // Important: we reset the structure
 			lvi.mask = LVIF_TEXT | LVIF_PARAM;
 			lvi.iItem = (int)i;
 			lvi.iSubItem = 0;
 			lvi.pszText = (LPWSTR)std::to_wstring(proc.pid).c_str();
-			lvi.lParam = proc.pid;  // Сохраняем PID в lParam
+			lvi.lParam = proc.pid;  // Saving the PID in lParam
 			ListView_InsertItem(hList, &lvi);
 
-			// Колонка 1: Имя процесса
+			// Column 1: Process name
 			ListView_SetItemText(hList, i, 1, (LPWSTR)proc.name.c_str());
 
-			// Колонка 2: Имя пользователя (используем новую функцию)
+			// Column 2: User name (using a new feature)
 			std::wstring username = GetProcessUserName(proc.pid);
 			ListView_SetItemText(hList, i, 2, (LPWSTR)username.c_str());
 
-			// Колонка 3: Память (MB)
+			// Column 3: Memory (MB)
 			wchar_t memoryStr[32];
 			if (proc.workingSetSize > 0) {
 				swprintf_s(memoryStr, L"%llu", proc.workingSetSize);
@@ -732,25 +731,25 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 			}
 			ListView_SetItemText(hList, i, 3, memoryStr);
 
-			// Колонка 4: Потоки
+			//Column 4: Flows
 			wchar_t threadsStr[32];
 			swprintf_s(threadsStr, L"%lu", proc.threadCount);
 			ListView_SetItemText(hList, i, 4, threadsStr);
 
-			// Колонка 5: Путь
+			// Column 5: The path
 			ListView_SetItemText(hList, i, 5, (LPWSTR)proc.fullPath.c_str());
 		}
 
-		// Авто-подгонка ширины колонок
-		for (int i = 0; i < 6; i++) {  // 6 колонок
+		//Auto-adjusting column widths
+		for (int i = 0; i < 6; i++) {  // 6 columns
 			ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE_USEHEADER);
 		}
 
-		std::wstring status = L"Загружено процессов: " + std::to_wstring(g_processes.size());
-		UpdateStatusBar(status.c_str());  // <-- Используем .c_str() для преобразования
+		std::wstring status = L"Loaded processes: " + std::to_wstring(g_processes.size());
+		UpdateStatusBar(status.c_str());  
 	}
 
-	//Показ модулей выбранного процесса
+	//Showing the modules of the selected process
 	void ShowProcessModules(HWND hList, DWORD pid) {
 		ListView_DeleteAllItems(hList);
 
@@ -780,17 +779,17 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		}
 	}
 
-	//Отображение детальной информации о процессе
+	//Displaying detailed information about the process
 	void DisplayProcessDetails(DWORD pid) {
-		//Здесь можно добавить вывод в третью вкладку
+		//Here you can add the output to the third tab.
 	}
 
-	// Завершение выбранного процесса
+	// Completion of the selected process
 	void KillSelectedProcess() {
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
 		if (selected == -1) {
-			MessageBox(g_hMainWnd, L"Выберите процесс для завершения",
-				L"Ошибка", MB_ICONWARNING);
+			MessageBox(g_hMainWnd, L"Select the process to complete",
+				L"Error", MB_ICONWARNING);
 			return;
 		}
 
@@ -798,11 +797,11 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		ListView_GetItemText(g_hProcessList, selected, 1, name, 256);
 
 		wchar_t message[512];
-		swprintf_s(message, L"Завершить процесс \"%s\"?", name);
+		swprintf_s(message, L"End the process \"%s\"?", name);
 
-		if (MessageBox(g_hMainWnd, message, L"Подтверждение",
+		if (MessageBox(g_hMainWnd, message, L"Confirm",
 			MB_YESNO | MB_ICONQUESTION) == IDYES) {
-			// Правильное получение PID из ListView
+			// Getting the PID from the ListView correctly
 			LVITEM lvi;
 			ZeroMemory(&lvi, sizeof(LVITEM));
 			lvi.iItem = selected;
@@ -815,31 +814,31 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				if (hProcess) {
 					if (TerminateProcess(hProcess, 0)) {
 						wchar_t statusBuffer[512];
-						swprintf_s(statusBuffer, L"Процесс завершен: %s", name);
-						UpdateStatusBar(statusBuffer);  // Правильно
+						swprintf_s(statusBuffer, L"The process is completed: %s", name);
+						UpdateStatusBar(statusBuffer); 
 						RefreshProcessList(g_hProcessList);
 					}
 					else {
 						DWORD error = GetLastError();
 						wchar_t errorMsg[256];
-						swprintf_s(errorMsg, L"Не удалось завершить процесс. Код ошибки: %lu", error);
+						swprintf_s(errorMsg, L"The process could not be completed. Error code: %lu", error);
 						MessageBox(g_hMainWnd, errorMsg,
-							L"Ошибка", MB_ICONERROR);
+							L"Error", MB_ICONERROR);
 					}
 					CloseHandle(hProcess);
 				}
 				else {
 					DWORD error = GetLastError();
 					wchar_t errorMsg[256];
-					swprintf_s(errorMsg, L"Не удалось открыть процесс. Код ошибки: %lu", error);
+					swprintf_s(errorMsg, L"The process could not be opened. Error code: %lu", error);
 					MessageBox(g_hMainWnd, errorMsg,
-						L"Ошибка", MB_ICONERROR);
+						L"Error", MB_ICONERROR);
 				}
 			}
 		}
 	}
 
-	//Включаем привелегии отладки
+	//Enabling debugging privileges
 	BOOL EnableDebugPrivilege() {
 		HANDLE hToken;
 		TOKEN_PRIVILEGES tp;
@@ -863,18 +862,18 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
 	}
 
-	//Обновление статус бара
+	//Updating the status of the bar
 	void UpdateStatusBar(const wchar_t* text) {
 		if (g_hStatusBar) {
 			SendMessage(g_hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
 			SendMessage(g_hStatusBar, SB_SETTEXT, 1, (LPARAM)L"Windows Process Monitor v1.0");
 
-			// Обновляем дату/время в третьей части
+			// Updating the date/time in the third part
 			SYSTEMTIME st;
 			GetLocalTime(&st);
 			wchar_t timeStr[64];
 			swprintf_s(timeStr, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
-			SendMessage(g_hStatusBar, SB_SETTEXT, 2, (LPARAM)timeStr);  // <-- ИСПРАВЛЕНО: g_hStatusBar
+			SendMessage(g_hStatusBar, SB_SETTEXT, 2, (LPARAM)timeStr); 
 		}
 	}
 /*
