@@ -416,12 +416,12 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		// Creating buttons ABOVE the button panel
 		CreateWindow(L"BUTTON", L"Update",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-			10, 5, 80, 25, hButtonPanel, (HMENU)IDC_REFRESH_BTN,
+			10, 5, 80, 25, hWnd, (HMENU)IDC_REFRESH_BTN,
 			g_hInstance, NULL);
 
 		CreateWindow(L"BUTTON", L"Close",
 			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-			100, 5, 80, 25, hButtonPanel, (HMENU)IDC_KILL_BTN,
+			100, 5, 80, 25, hWnd, (HMENU)IDC_KILL_BTN,
 			g_hInstance, NULL);
 
 		// Creating a Tab Control UNDER the button panel
