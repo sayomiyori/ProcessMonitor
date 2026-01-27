@@ -394,17 +394,369 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		return 0;
 	}
 
-	// Show process properties (stub)
-	void ShowProcessProperties(HWND hWnd) {
+	//Getting detailed information about the process
+	ProcessInfo GetDetailedProcessInfo(DWORD pid) {
+		ProcessInfo info = {};
+		info.pid = pid;
+
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+			FALSE, pid);
+
+		if (!hProcess) 
+		{
+			//Try with less rights
+
+			hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+		}
+		if (hProcess) 
+		{
+			//Based info from TOOLHELP
+			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (snapshot != INVALID_HANDLE_VALUE)
+			{
+				PROCESSENTRY32W pe;
+				pe.dwSize = sizeof(PROCESSENTRY32W);
+
+				if (Process32FirstW(snapshot, &pe))
+				{
+					do
+					{
+						if (pe.th32ProcessID == pid)
+						{
+							info.name = pe.szExeFile;
+							info.parentPid = pe.th32ParentProcessID;
+							info.threadCount = pe.cntThreads;
+							break;
+						}
+					} while (Process32NextW(snapshot, &pe));
+				}
+				CloseHandle(snapshot);
+			}
+			
+		
+
+			//Full path
+
+			wchar_t path[MAX_PATH] = { 0 };
+			DWORD pathSize = MAX_PATH;
+
+			if (GetModuleFileNameEx(hProcess, NULL, path, MAX_PATH)) 
+			{
+				info.fullPath = path;
+			}
+			else if(QueryFullProcessImageNameW(hProcess, 0, path, &pathSize))
+			{
+				info.fullPath = path;
+			}
+
+			//CommandLine
+			info.commandLine = GetProcessCommandLine(pid);
+
+			//User
+			info.userName = GetProcessUserName(pid);
+
+			//Integrity LVL
+			info.integrityLvl = GetProcessIntegrityLevel(pid);
+
+			//Priority
+			info.priority = GetPriorityClass(hProcess);
+
+			//Session ID
+			ProcessIdToSessionId(pid, &info.sessionId);
+
+			//Creation time
+			GetProcessTimes(hProcess, &info.createTime, NULL,
+				&info.kernelTime, &info.userTime);
+
+			//Memory usage
+			PROCESS_MEMORY_COUNTERS_EX pmc;
+			if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) 
+			{
+				info.workingSetSize = pmc.WorkingSetSize;
+				info.privateBytes = pmc.PrivateUsage;
+				info.virtualSize = pmc.PagefileUsage;
+			}
+
+			//Using cpu (simple calculation)
+			static FILETIME prevKernel = { 0 }, prevUser = { 0 };
+			info.cpuUsage = CalculateCPUUsage(pid, &prevKernel, &prevUser);
+
+			CloseHandle(hProcess);
+		}
+
+		return info;
+	}
+
+	//Getting the process command prompt
+	std::wstring GetProcessCommandLine(DWORD pid) {
+		std::wstring cmdLine = L"Not available";
+
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+			FALSE, pid);
+
+		if (!hProcess) {
+			return cmdLine;
+		}
+
+
+		//Use NtQueryInformationProcess to get the command line
+		typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(
+			HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+
+		static pNtQueryInformationProcess NtQueryInformationProcess = NULL;
+
+		if (!NtQueryInformationProcess) {
+			HMODULE hNtdll = GetModuleHandle(L"ntdll.dll");
+			if (hNtdll) {
+				NtQueryInformationProcess = (pNtQueryInformationProcess)
+					GetProcAddress(hNtdll, "NtQueryInformationProcess");
+			}
+		}
+
+		if (NtQueryInformationProcess) {
+			PROCESS_BASIC_INFORMATION pbi;
+			NTSTATUS status = NtQueryInformationProcess(hProcess,
+				ProcessBasicInformation, &pbi, sizeof(pbi), NULL);
+
+			if (NT_SUCCESS(status)) {
+				PEB peb;
+				SIZE_T bytesRead;
+
+				if (ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), &bytesRead)) {
+					RTL_USER_PROCESS_PARAMETERS upp;
+
+					if (ReadProcessMemory(hProcess, peb.ProcessParameters, &upp, sizeof(upp), &bytesRead)) {
+						if (upp.CommandLine.Length > 0) {
+							wchar_t* buffer = new wchar_t[upp.CommandLine.Length / sizeof(wchar_t) + 1];
+
+							if (ReadProcessMemory(hProcess, upp.CommandLine.Buffer,
+								buffer, upp.CommandLine.Length, &bytesRead)) {
+								buffer[bytesRead / sizeof(wchar_t)] = L'\0';
+								cmdLine = buffer;
+							}
+
+							delete[] buffer;
+						}
+					}
+				}
+			}
+		}
+
+		CloseHandle(hProcess);
+		return cmdLine;
+	}
+
+	//Getting the process integrity level
+
+	std::wstring GetProcessorIntegrityLevel(DWORD pid) {
+		std::wstring integrity = L"Unknown";
+
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+		if (!hProcess) {
+			return integrity;
+		}
+
+		HANDLE hToken = NULL;
+		if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) {
+			DWORD tokenInfoSize = 0;
+			GetTokenInformation(hToken, TokenIntegrityLevel, NULL, 0, &tokenInfoSize);
+
+			if (tokenInfoSize > 0) {
+				PTOKEN_MANDATORY_LABEL ptil = (PTOKEN_MANDATORY_LABEL)malloc(tokenInfoSize);
+				if (ptil && GetTokenInformation(hToken, TokenIntegrityLevel,
+					ptil, tokenInfoSize, &tokenInfoSize)) {
+					DWORD integrityLevel = *GetSidSubAuthority(ptil,
+						(DWORD)(*GetSidSubAuthorityCount(ptil) - 1));
+
+					if (integrityLevel < SECURITY_MANDATORY_LOW_RID) {
+						integrity = L"Untrusted";
+					}
+					else if (integrityLevel < SECURITY_MANDATORY_MEDIUM_RID ) {
+						integrity = L"Low";
+					}
+					else if (integrityLevel < SECURITY_MANDATORY_MEDIUM_RID &&
+						integrityLevel < SECURITY_MANDATORY_HIGH_RID) {
+						integrity = L"Medium";
+					}
+					else if (integrityLevel < SECURITY_MANDATORY_HIGH_RID &&
+						integrityLevel < SECURITY_MANDATORY_SYSTEM_RID) {
+						integrity = L"High";
+					}
+					else if (integrityLevel < SECURITY_MANDATORY_SYSTEM_RID) {
+						integrity = L"System";
+					}
+				}
+				free(ptil);
+			}
+			CloseHandle(hToken);
+		}
+
+		CloseHandle(hProcess);
+		return integrity;
+
+	}
+
+	//Time formatting
+	std::wstring FormatFileTime(FILETIME ft) {
+		if (ft.dwLowDateTime == 0 && ft.dwHighDateTime == 0) {
+			return L"N/A";
+		}
+
+		FILETIME localFt;
+		FileTimeToLocalFileTime(&ft, &localFt);
+
+		SYSTEMTIME st;
+		FileTimeToSystemTime(&localFt, &st);
+
+		wchar_t buffer[64];
+		swprintf_s(buffer, L"%04d-%02d-%02d %02d:%02d:%02d",
+			st.wYear, st.wMonth, st.wDay,
+			st.wHour, st.wMinute, st.wSecond);
+
+		return buffer;
+	}
+
+	//Formatting the memory size
+	std::wstring FormatMemorySize(SIZE_T bytes) {
+		const wchar_t* units[] = { L"B", L"KB", L"MB", L"GB" };
+		double size = (double)bytes;
+		int unitIndex = 0;
+
+		while (size >= 1024.0 && unitIndex < 3) {
+			size /= 1024.0;
+			unitIndex++;
+		}
+
+		wchar_t buffer[32];
+		swprintf_s(buffer, L"%.2f %s", size, units[unitIndex]);
+
+		return buffer;
+	}
+
+	//Calculation of CPU usage
+	double CalculateCPUUSage(DWORD pid, FILETIME* prevKernel, FILETIME* prevUser) 
+	{
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+		if (!hProcess) return 0.0;
+
+		FILETIME createTime, exitTime, kernelTime, userTime;
+		FILETIME sysIdleTime, sysKernelTime, sysUserTime;
+
+		if (!GetProcessTimes(hProcess, &createTime, &exitTime, &kernelTime, &userTime) ||
+			!GetSystemTimes(&sysIdleTime, &sysKernelTime, &sysUserTime)) {
+			CloseHandle(hProcess);
+			return 0.0;
+		}
+	}
+
+	//Process Properties Dialog procedure
+	INT_PTR CALLBACK PropertiesDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+	{
+		static DWORD processPid = 0;
+		static ProcessInfo procInfo;
+
+		switch (message) 
+		{
+			case WM_INITDIALOG: 
+			{
+				processPid = (DWORD)lParam;
+				
+				//We receive detailed information about the process
+				procInfo = GetDetailedProcessInfo(processPid);
+
+				if (procInfo.pid == 0) 
+				{
+					MessageBox(hDlg, L"Couldn't get information about the process", L"Error",
+						MB_OK | MB_ICONERROR);
+					EndDialog(hDlg, 0);
+					return TRUE;
+				}
+
+				//Filling in the dialog fields
+				SetDlgItemText(hDlg, IDC_PROP_NAME, procInfo.name.c_str());
+				SetDlgItemInt(hDlg, IDC_PROP_PID, procInfo.pid, FALSE);
+				SetDlgItemInt(hDlg, IDC_PROP_PARENT_PID, procInfo.parentPid, FALSE);
+				SetDlgItemText(hDlg, IDC_PROP_PATH, procInfo.fullPath.c_str());
+				SetDlgItemText(hDlg, IDC_PROP_CMD_LINE, procInfo.commandLine.c_str());
+				SetDlgItemText(hDlg, IDC_PROP_USER, procInfo.userName.c_str());
+
+				//Priority
+				std::wstring priorityStr;
+				switch (procInfo.priority) 
+				{
+					case REALTIME_PRIORITY_CLASS: priorityStr = L"Real-time"; break;
+					case HIGH_PRIORITY_CLASS: priorityStr = L"High"; break;
+					case ABOVE_NORMAL_PRIORITY_CLASS: priorityStr = L"Above Normal"; break;
+					case NORMAL_PRIORITY_CLASS: priorityStr = L"Normal"; break;
+					case BELOW_NORMAL_PRIORITY_CLASS: priorityStr = L"Below Normal"; break;
+					case IDLE_PRIORITY_CLASS: priorityStr = L"Idle"; break;
+					default: priorityStr = L"Unknown"; break;
+				}
+				SetDlgItemText(hDlg, IDC_PROP_PRIORITY, priorityStr.c_str());
+
+				//Thread and memory
+				SetDlgItemInt(hDlg, IDC_PROP_THREADS, procInfo.threadCount, FALSE);
+
+				wchar_t memoryStr[256];
+				swprintf_s(memoryStr, L"Working Set: %s\nPrivate Bytes: %s\nVirtual Size: %s",
+					FormatMemorySize(procInfo.workingSetSize).c_str(),
+					FormatMemorySize(procInfo.privateBytes).c_str(),
+					FormatMemorySize(procInfo.virtualSize).c_str());
+				SetDlgItemText(hDlg, IDC_PROP_MEMORY, memoryStr);
+
+
+				//Using CPU
+				wchar_t cpuStr[64];
+				swprintf_s(cpuStr, L"%.2f%%", procInfo.cpuUsage);
+				SetDlgItemText(hDlg, IDC_PROP_CPU_USAGE, cpuStr);
+
+				//Start time
+				SetDlgItemText(hDlg, IDC_PROP_START_TIME, FormatFileTime(procInfo.createTime).c_str());
+
+				//Session ID
+				SetDlgItemInt(hDlg, IDC_PROP_SESSION_ID, procInfo.sessionId, FALSE);
+
+				//Integrity level
+				SetDlgItemText(hDlg, IDC_PROP_INTEGRITY, procInfo.integrityLvl.c_str());
+
+				//Setting the window title
+				wchar_t title[256];
+				swprintf_s(title, L"Threads Properties: %s (PID: %lu)",
+					procInfo.name.c_str(), procInfo.pid);
+				SetWindowText(hDlg, title);
+
+
+				//Setting Icon
+				HICON hIcon = LoadIcon(NULL, IDI_APPLICATION);
+				SendMessage(hDlg, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+
+				return TRUE;
+			}
+
+			case WM_COMMAND:
+				if (LOWORD(wParam) == IDC_CLOSE_BTN || LOWORD(wParam) == IDCANCEL) 
+				{
+					EndDialog(hDlg, 0);
+					return TRUE;
+				}
+				break;
+			case WM_CLOSE:
+				EndDialog(hDlg, 0);
+				return TRUE;
+		}
+		return FALSE;
+	}
+
+	// Show process properties 
+	void ShowProcessProperties(HWND hParent) 
+	{
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
-		if (selected == -1) {
-			MessageBox(hWnd, L"Выберите процесс для просмотра свойств",
+		if (selected == -1) 
+		{
+			MessageBox(hParent, L"Выберите процесс для просмотра свойств",
 				L"Информация", MB_OK | MB_ICONINFORMATION);
 			return;
 		}
-
-		wchar_t procName[256];
-		ListView_GetItemText(g_hProcessList, selected, 1, procName, 256);
 
 		// Getting the PID
 		LVITEM lvi;
@@ -412,18 +764,21 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		lvi.iItem = selected;
 		lvi.mask = LVIF_PARAM;
 
-		if (ListView_GetItem(g_hProcessList, &lvi)) {
+		if (ListView_GetItem(g_hProcessList, &lvi)) 
+		{
 			DWORD pid = (DWORD)lvi.lParam;
-			wchar_t msg[512];
-			swprintf_s(msg, L"Свойства процесса:\n\nИмя: %s\nPID: %lu", procName, pid);
-			MessageBox(hWnd, msg, L"Свойства процесса", MB_OK | MB_ICONINFORMATION);
+			DialogBoxParam(g_hInstance,
+				MAKEINTRESOURCE(IDD_PROPERTIES_DIALOG),
+				hParent, PropertiesDlgProc, (LPARAM)pid);
 		}
 	}
 
 	// Show the modules of the selected process
-	void ShowSelectedProcessModules() {
+	void ShowSelectedProcessModules() 
+	{
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
-		if (selected == -1) {
+		if (selected == -1) 
+		{
 			MessageBox(g_hMainWnd, L"Выберите процесс для просмотра модулей",
 				L"Информация", MB_OK | MB_ICONINFORMATION);
 			return;
@@ -435,7 +790,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		lvi.iItem = selected;
 		lvi.mask = LVIF_PARAM;
 
-		if (ListView_GetItem(g_hProcessList, &lvi)) {
+		if (ListView_GetItem(g_hProcessList, &lvi)) 
+		{
 			DWORD pid = (DWORD)lvi.lParam;
 			// Switch to the modules tab
 			TabCtrl_SetCurSel(g_hTabControl, 1);
@@ -452,13 +808,15 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	// Exporting a list of processes (stub)
-	void ExportProcessList() {
+	void ExportProcessList() 
+	{
 		MessageBox(g_hMainWnd, L"Export function in development",
 			L"Info", MB_OK | MB_ICONINFORMATION);
 	}
 
 	// A function for displaying the context menu
-	void ShowContextMenu(HWND hWnd, int x, int y) {
+	void ShowContextMenu(HWND hWnd, int x, int y) 
+	{
 		HMENU hMenu = CreatePopupMenu();
 		if (!hMenu) return;
 
@@ -482,7 +840,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 	//Creating controls in the main window
 	
-	void CreateMainWindowControls(HWND hWnd) {
+	void CreateMainWindowControls(HWND hWnd) 
+	{
 		RECT rcClient;
 		GetClientRect(hWnd, &rcClient);
 
@@ -492,7 +851,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			0, 0, rcClient.right, 30,
 			hWnd, NULL, g_hInstance, NULL);
 
-		if (hButtonPanel) {
+		if (hButtonPanel) 
+		{
 			// Setting the background color for the button panel (optional)
 			SendMessage(hButtonPanel, WM_SETFONT,
 				(WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
@@ -517,7 +877,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			hWnd, (HMENU)IDC_TAB_CONTROL,
 			g_hInstance, NULL);
 
-		if (!g_hTabControl) {
+		if (!g_hTabControl) 
+		{
 			MessageBox(hWnd, L"Couldn't create Tab Control", L"Error", MB_OK);
 			return;
 		}
@@ -549,7 +910,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			g_hTabControl, (HMENU)IDC_PROCESS_LIST,
 			g_hInstance, NULL);
 
-		if (!g_hProcessList) {
+		if (!g_hProcessList) 
+		{
 			MessageBox(hWnd, L"Failed to create a list of processes", L"Error", MB_OK);
 			return;
 		}
@@ -562,7 +924,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		lvc.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
 
 		// Creating headings for 6 columns
-		wchar_t* columnTitles[] = {
+		wchar_t* columnTitles[] = 
+		{
 			const_cast<wchar_t*>(L"PID"),
 			const_cast<wchar_t*>(L"Process Name"),
 			const_cast<wchar_t*>(L"User"),
@@ -574,7 +937,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		int columnWidths[] = { 80, 200, 150, 100, 80, 350 };
 
 		// We insert 6 columns
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < 6; i++) 
+		{
 			lvc.iSubItem = i;
 			lvc.pszText = columnTitles[i];
 			lvc.cx = columnWidths[i];
@@ -591,7 +955,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			g_hTabControl, (HMENU)IDC_MODULE_LIST,
 			g_hInstance, NULL);
 
-		if (!g_hModuleList) {
+		if (!g_hModuleList) 
+		{
 			MessageBox(hWnd, L"Couldn't create a list of modules", L"Error", MB_OK);
 			return;
 		}
@@ -620,7 +985,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
 			0, 0, 0, 0, hWnd, NULL, g_hInstance, NULL);
 
-		if (!g_hStatusBar) {
+		if (!g_hStatusBar) 
+		{
 			MessageBox(hWnd, L"Couldn't create a status bar", L"Error", MB_OK);
 			return;
 		}
@@ -630,25 +996,29 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	//Applying styles to a ListView
-	void ApplyListViewStyle(HWND hListView) {
+	void ApplyListViewStyle(HWND hListView) 
+	{
 		ListView_SetExtendedListViewStyle(hListView,
 			LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 
 	}
 
 	//Getting a list of processes
-	std::vector<ProcessInfo> GetProcessesList() {
+	std::vector<ProcessInfo> GetProcessesList() 
+	{
 		std::vector<ProcessInfo> processes;
 
 		HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-		if (snapshot == INVALID_HANDLE_VALUE) {
+		if (snapshot == INVALID_HANDLE_VALUE) 
+		{
 			return processes;
 		}
 
 		PROCESSENTRY32W processEntry;
 		processEntry.dwSize = sizeof(PROCESSENTRY32W);
 
-		if (Process32FirstW(snapshot, &processEntry)) {
+		if (Process32FirstW(snapshot, &processEntry)) 
+		{
 			do {
 				ProcessInfo info;
 				info.pid = processEntry.th32ProcessID;
@@ -661,16 +1031,19 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 					PROCESS_VM_READ,
 					FALSE, info.pid);
 
-				if (hProcess) {
+				if (hProcess) 
+				{
 					// Full path
 					wchar_t path[MAX_PATH];
-					if (GetModuleFileNameExW(hProcess, NULL, path, MAX_PATH)) {
+					if (GetModuleFileNameExW(hProcess, NULL, path, MAX_PATH)) 
+					{
 						info.fullPath = path;
 					}
 
 					//Memory usage
 					PROCESS_MEMORY_COUNTERS pmc;
-					if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
+					if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) 
+					{
 						info.workingSetSize = pmc.WorkingSetSize / (1024 * 1024); // MB
 					}
 
@@ -682,7 +1055,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 					CloseHandle(hProcess);
 				}
-				else {
+				else 
+				{
 					// If the process could not be opened, we still get the username
 					info.userName = GetProcessUserName(info.pid);
 				}
@@ -695,7 +1069,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 		// Sorting by process name
 		std::sort(processes.begin(), processes.end(),
-			[](const ProcessInfo& a, const ProcessInfo& b) {
+			[](const ProcessInfo& a, const ProcessInfo& b) 
+			{
 				return a.name < b.name;
 			});
 
@@ -704,15 +1079,18 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 	// ============ A FUNCTION FOR GETTING THE USERNAME OF A PROCESS ============
 
-	std::wstring GetProcessUserName(DWORD pid) {
+	std::wstring GetProcessUserName(DWORD pid) 
+	{
 		//Special system processes
 		if (pid == 0) return L"SYSTEM (Idle)";
 		if (pid == 4) return L"SYSTEM";
 
 		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-		if (!hProcess) {
+		if (!hProcess) 
+		{
 			DWORD error = GetLastError();
-			if (error == ERROR_ACCESS_DENIED) {
+			if (error == ERROR_ACCESS_DENIED) 
+			{
 				return L"SYSTEM";
 			}
 			return L"Access Denied";
@@ -722,19 +1100,23 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		std::wstring username = L"Unknown";
 
 		// Trying to open the process token
-		if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) {
+		if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) 
+		{
 			DWORD tokenInfoSize = 0;
 
 			// 1. First, we get the buffer size
 			GetTokenInformation(hToken, TokenUser, NULL, 0, &tokenInfoSize);
 
-			if (tokenInfoSize > 0) {
+			if (tokenInfoSize > 0) 
+			{
 				// 2. Allocating memory for information about the token
 				PTOKEN_USER pTokenUser = (PTOKEN_USER)malloc(tokenInfoSize);
-				if (pTokenUser) {
+				if (pTokenUser) 
+				{
 					// 3. Getting information about the token user
 					if (GetTokenInformation(hToken, TokenUser, pTokenUser,
-						tokenInfoSize, &tokenInfoSize)) {
+						tokenInfoSize, &tokenInfoSize)) 
+					{
 
 						wchar_t name[256] = { 0 };
 						wchar_t domain[256] = { 0 };
@@ -744,16 +1126,20 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 						// 4. Converting the SID to a readable name
 						if (LookupAccountSid(NULL, pTokenUser->User.Sid,
-							name, &nameSize, domain, &domainSize, &sidType)) {
+							name, &nameSize, domain, &domainSize, &sidType)) 
+						{
 
-							if (domainSize > 0 && wcslen(domain) > 0) {
+							if (domainSize > 0 && wcslen(domain) > 0) 
+							{
 								username = std::wstring(domain) + L"\\" + name;
 							}
-							else {
+							else 
+							{
 								username = name;
 							}
 						}
-						else {
+						else 
+						{
 							//Couldn't convert SID to name
 							username = L"SYSTEM";
 						}
@@ -761,14 +1147,16 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 					free(pTokenUser);
 				}
 			}
-			else {
+			else 
+			{
 				// Couldn't get information about the token
 				username = L"SYSTEM";
 			}
 
 			CloseHandle(hToken);
 		}
-		else {
+		else 
+		{
 			// Couldn't open the token
 			username = L"SYSTEM";
 		}
@@ -779,7 +1167,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 
 	// Updating the list of processes in the ListView
-	void RefreshProcessList(HWND hList) {
+	void RefreshProcessList(HWND hList) 
+	{
 		//Clearing the list
 		ListView_DeleteAllItems(hList);
 
@@ -787,7 +1176,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		g_processes = GetProcessesList();
 
 		//Filling in the ListView
-		for (size_t i = 0; i < g_processes.size(); i++) {
+		for (size_t i = 0; i < g_processes.size(); i++) 
+		{
 			const ProcessInfo& proc = g_processes[i];
 
 			LVITEM lvi;
@@ -808,10 +1198,12 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 			// Column 3: Memory (MB)
 			wchar_t memoryStr[32];
-			if (proc.workingSetSize > 0) {
+			if (proc.workingSetSize > 0) 
+			{
 				swprintf_s(memoryStr, L"%llu", proc.workingSetSize);
 			}
-			else {
+			else 
+			{
 				wcscpy_s(memoryStr, L"0");
 			}
 			ListView_SetItemText(hList, i, 3, memoryStr);
@@ -826,7 +1218,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		}
 
 		//Auto-adjusting column widths
-		for (int i = 0; i < 6; i++) {  // 6 columns
+		for (int i = 0; i < 6; i++) 
+		{  // 6 columns
 			ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE_USEHEADER);
 		}
 
@@ -835,19 +1228,23 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	//Showing the modules of the selected process
-	void ShowProcessModules(HWND hList, DWORD pid) {
+	void ShowProcessModules(HWND hList, DWORD pid) 
+	{
 		ListView_DeleteAllItems(hList);
 
 		std::vector<std::wstring> modules;
 		HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
 
-		if (snapshot != INVALID_HANDLE_VALUE) {
+		if (snapshot != INVALID_HANDLE_VALUE) 
+		{
 			MODULEENTRY32W moduleEntry;
 			moduleEntry.dwSize = sizeof(MODULEENTRY32W);
 
-			if (Module32FirstW(snapshot, &moduleEntry)) {
+			if (Module32FirstW(snapshot, &moduleEntry)) 
+			{
 				int i = 0;
-				do {
+				do 
+				{
 					LVITEM lvi;
 					lvi.mask = LVIF_TEXT;
 					lvi.iItem = i;
@@ -865,14 +1262,17 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	//Displaying detailed information about the process
-	void DisplayProcessDetails(DWORD pid) {
+	void DisplayProcessDetails(DWORD pid) 
+	{
 		//Here you can add the output to the third tab.
 	}
 
 	// Completion of the selected process
-	void KillSelectedProcess() {
+	void KillSelectedProcess() 
+	{
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
-		if (selected == -1) {
+		if (selected == -1) 
+		{
 			MessageBox(g_hMainWnd, L"Select the process to complete",
 				L"Error", MB_ICONWARNING);
 			return;
@@ -885,25 +1285,30 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		swprintf_s(message, L"End the process \"%s\"?", name);
 
 		if (MessageBox(g_hMainWnd, message, L"Confirm",
-			MB_YESNO | MB_ICONQUESTION) == IDYES) {
+			MB_YESNO | MB_ICONQUESTION) == IDYES) 
+		{
 			// Getting the PID from the ListView correctly
 			LVITEM lvi;
 			ZeroMemory(&lvi, sizeof(LVITEM));
 			lvi.iItem = selected;
 			lvi.mask = LVIF_PARAM;
 
-			if (ListView_GetItem(g_hProcessList, &lvi)) {
+			if (ListView_GetItem(g_hProcessList, &lvi)) 
+			{
 				DWORD pid = (DWORD)lvi.lParam;
 
 				HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-				if (hProcess) {
-					if (TerminateProcess(hProcess, 0)) {
+				if (hProcess) 
+				{
+					if (TerminateProcess(hProcess, 0)) 
+					{
 						wchar_t statusBuffer[512];
 						swprintf_s(statusBuffer, L"The process is completed: %s", name);
 						UpdateStatusBar(statusBuffer); 
 						RefreshProcessList(g_hProcessList);
 					}
-					else {
+					else 
+					{
 						DWORD error = GetLastError();
 						wchar_t errorMsg[256];
 						swprintf_s(errorMsg, L"The process could not be completed. Error code: %lu", error);
@@ -912,7 +1317,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 					}
 					CloseHandle(hProcess);
 				}
-				else {
+				else 
+				{
 					DWORD error = GetLastError();
 					wchar_t errorMsg[256];
 					swprintf_s(errorMsg, L"The process could not be opened. Error code: %lu", error);
@@ -924,15 +1330,18 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	//Enabling debugging privileges
-	BOOL EnableDebugPrivilege() {
+	BOOL EnableDebugPrivilege() 
+	{
 		HANDLE hToken;
 		TOKEN_PRIVILEGES tp;
 
-		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) 
+		{
 			return FALSE;
 		}
 
-		if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &tp.Privileges[0].Luid)) {
+		if (!LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &tp.Privileges[0].Luid)) 
+		{
 			CloseHandle(hToken);
 			return FALSE;
 		}
@@ -948,8 +1357,10 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	//Updating the status of the bar
-	void UpdateStatusBar(const wchar_t* text) {
-		if (g_hStatusBar) {
+	void UpdateStatusBar(const wchar_t* text) 
+	{
+		if (g_hStatusBar) 
+		{
 			SendMessage(g_hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
 			SendMessage(g_hStatusBar, SB_SETTEXT, 1, (LPARAM)L"Windows Process Monitor v1.0");
 
