@@ -29,6 +29,14 @@
 #define IDC_KILL_BTN 1005
 #define IDM_PROCESS_MENU 2000
 
+// Constants for context menu
+#define IDM_REFRESH     2100
+#define IDM_KILL        2101
+#define IDM_KILL_TREE   2102
+#define IDM_PROPERTIES  2103
+#define IDM_MODULES     2104
+#define IDM_EXPORT      2105
+
 // Structure for the process
 struct ProcessInfo {
     DWORD pid;
@@ -59,3 +67,5 @@ void ShowContextMenu(HWND hWnd, int x, int y);
 void ShowProcessProperties(HWND hWnd);
 void ShowSelectedProcessModules();
 void ExportProcessList();
+void KillProcessTree();
+int KillProcessTreeRecursive(DWORD parentPid, int depth);

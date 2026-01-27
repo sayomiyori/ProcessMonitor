@@ -97,6 +97,92 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 	return TRUE;
 }
 
+//KillProcessTree func
+void KillProcessTree() {
+	int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+	if (selected == -1) {
+		MessageBox(g_hMainWnd, L"Select a process to complete the tree", L"Error", MB_ICONWARNING);
+		return;
+	}
+
+	//Take Pid selected process
+	LVITEM lvi;
+	ZeroMemory(&lvi, sizeof(LVITEM));
+	lvi.iItem = selected;
+	lvi.mask = LVIF_PARAM;
+
+	if (!ListView_GetItem(g_hProcessList, &lvi)) {
+		return;
+	}
+
+	DWORD targetPid = (DWORD)lvi.lParam;
+	wchar_t procName[256];
+	ListView_GetItemText(g_hProcessList, selected, 1, procName, 256);
+
+	//confirm query
+	wchar_t message[512];
+	swprintf_s(message, L"Finish the process tree for \"%s\" (PID: %lu)?\n\All child processes will also be terminated!",
+		procName, targetPid);
+
+	if (MessageBox(g_hMainWnd, message, L"Confirm",
+		MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
+		int killedCount = KillProcessTreeRecursive(targetPid, 0);
+
+		wchar_t status[256];
+		swprintf_s(status, L"Complete processes: %d", killedCount);
+		UpdateStatusBar(status);
+
+		//Updating process list
+		RefreshProcessList(g_hProcessList);
+	}
+
+}
+
+int KillProcessTreeRecursive(DWORD parentPid, int depth) {
+	int killedCount = 0;
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+	if (snapshot == INVALID_HANDLE_VALUE) {
+		return 0;
+	}
+
+	PROCESSENTRY32W pe;
+	pe.dwSize = sizeof(PROCESSENTRY32W);
+
+	//First, we terminate all child processes
+
+	if (Process32FirstW(snapshot, &pe)) {
+		do {
+			if (pe.th32ParentProcessID == parentPid) {
+				//Recursively terminating child processes
+				killedCount += KillProcessTreeRecursive(pe.th32ProcessID, depth + 1);
+
+				//Terminating the current child process
+				HANDLE hChild = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+				if (hChild) {
+					TerminateProcess(hChild, 0);
+					CloseHandle(hChild);
+					killedCount++;
+				}
+			}
+			
+		} while (Process32NextW(snapshot, &pe));
+	}
+
+	//Now we are completing the parent process.
+	if (depth > 0) {
+		HANDLE hParent = OpenProcess(PROCESS_TERMINATE, FALSE, parentPid);
+		if (hParent) {
+			TerminateProcess(hParent, 0);
+			CloseHandle(hParent);
+			killedCount++;
+		}
+	}
+
+	CloseHandle(snapshot);
+	return killedCount;
+}
+
 //Main window procedure
 	LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
@@ -246,6 +332,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 		case WM_COMMAND:
 		{
 			int wmId = LOWORD(wParam);
+
 			switch (wmId) {
 			case IDC_REFRESH_BTN:
 				RefreshProcessList(g_hProcessList);
@@ -261,39 +348,37 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 				break;
 
 				// Processing context menu items
-			case IDM_PROCESS_MENU + 1:  
+			case IDM_REFRESH: 
 				RefreshProcessList(g_hProcessList);
 				{
-					std::wstring status = L"List updated. Processes: " +
-						std::to_wstring(g_processes.size());
-					UpdateStatusBar(status.c_str());
+					wchar_t statusBuffer[256];
+					swprintf_s(statusBuffer, L"List updated. Processes: %zu", g_processes.size());
+					UpdateStatusBar(statusBuffer);
 				}
 				break;
 
-			case IDM_PROCESS_MENU + 2:  // End the process
+			case IDM_KILL:  // End the process
 				KillSelectedProcess();
 				break;
 
-			case IDM_PROCESS_MENU + 3:  // Complete the process tree
-				MessageBox(hWnd, L"Функция 'Завершить дерево процессов' в разработке",
-					L"Информация", MB_OK | MB_ICONINFORMATION);
+			case IDM_KILL_TREE:  // Complete the process tree
+				KillProcessTree();
 				break;
 
-			case IDM_PROCESS_MENU + 4:  // Process Properties
+			case IDM_PROPERTIES:  // Process Properties
 				ShowProcessProperties(hWnd);
 				break;
 
-			case IDM_PROCESS_MENU + 5:  // Show modules
+			case IDM_MODULES:  // Show modules
 				ShowSelectedProcessModules();
 				break;
 
-			case IDM_PROCESS_MENU + 6:  // Exporting a list
+			case IDM_EXPORT:  // Exporting a list
 				ExportProcessList();
 				break;
 
 			default:
-				// Processing other commands
-				break;
+				return DefWindowProc(hWnd, message, wParam, lParam);
 			}
 			break;
 		}
