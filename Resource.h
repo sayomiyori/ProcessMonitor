@@ -16,6 +16,9 @@
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1
 #endif
+
+#define IDD_PROPERTIES_DIALOG 3000
+
 // Следующие стандартные значения для новых объектов
 //
 #ifdef APSTUDIO_INVOKED

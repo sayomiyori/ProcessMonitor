@@ -298,19 +298,16 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 		case WM_CONTEXTMENU:
 		{
-			// Checking whether the menu has been called for the ListView of processes
+			// Проверяем, вызвано ли меню для списка процессов
 			if ((HWND)wParam == g_hProcessList) {
-				// Getting the cursor coordinates
-				POINT pt;
-				pt.x = LOWORD(lParam);
-				pt.y = HIWORD(lParam);
+				POINT pt = { 0, 0 };
 
-				// If coordinates = -1, it means there was a right-click on the element
-				if (pt.x == -1 && pt.y == -1) {
-					// Getting the selected item
+				// Если координаты = -1, значит меню вызвано клавишей
+				if (lParam == -1) {
+					// Получаем выбранный элемент
 					int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
 					if (selected != -1) {
-						// Getting the coordinates of the selected element
+						// Получаем координаты элемента
 						RECT rc;
 						ListView_GetItemRect(g_hProcessList, selected, &rc, LVIR_BOUNDS);
 						pt.x = rc.left;
@@ -318,12 +315,18 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 						ClientToScreen(g_hProcessList, &pt);
 					}
 					else {
-						// If nothing is selected, use the current cursor position
+						// Используем текущую позицию курсора
 						GetCursorPos(&pt);
 					}
 				}
+				else {
+					// Используем переданные координаты
+					pt.x = LOWORD(lParam);
+					pt.y = HIWORD(lParam);
+				}
 
 				ShowContextMenu(hWnd, pt.x, pt.y);
+				return 0; // Обработано
 			}
 			break;
 		}
@@ -338,8 +341,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 				RefreshProcessList(g_hProcessList);
 				{
 					wchar_t statusBuffer[256];
-					swprintf_s(statusBuffer, L"List updated. Processes: %zu", g_processes.size());
-					UpdateStatusBar(statusBuffer); 
+					swprintf_s(statusBuffer, L"Список обновлен. Процессов: %zu", g_processes.size());
+					UpdateStatusBar(statusBuffer);
 				}
 				break;
 
@@ -347,33 +350,33 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 				KillSelectedProcess();
 				break;
 
-				// Processing context menu items
-			case IDM_REFRESH: 
+				// Обработка пунктов контекстного меню
+			case IDM_REFRESH:
 				RefreshProcessList(g_hProcessList);
 				{
 					wchar_t statusBuffer[256];
-					swprintf_s(statusBuffer, L"List updated. Processes: %zu", g_processes.size());
+					swprintf_s(statusBuffer, L"Список обновлен. Процессов: %zu", g_processes.size());
 					UpdateStatusBar(statusBuffer);
 				}
 				break;
 
-			case IDM_KILL:  // End the process
+			case IDM_KILL:  // Завершить процесс
 				KillSelectedProcess();
 				break;
 
-			case IDM_KILL_TREE:  // Complete the process tree
+			case IDM_KILL_TREE:  // Завершить дерево процессов
 				KillProcessTree();
 				break;
 
-			case IDM_PROPERTIES:  // Process Properties
+			case IDM_PROPERTIES:  // Свойства процесса
 				ShowProcessProperties(hWnd);
 				break;
 
-			case IDM_MODULES:  // Show modules
+			case IDM_MODULES:  // Показать модули
 				ShowSelectedProcessModules();
 				break;
 
-			case IDM_EXPORT:  // Exporting a list
+			case IDM_EXPORT:  // Экспорт списка
 				ExportProcessList();
 				break;
 
@@ -647,10 +650,14 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			CloseHandle(hProcess);
 			return 0.0;
 		}
+
+		// A simple implementation is to return 0 for an example
+		CloseHandle(hProcess);
+		return 0.0;
 	}
 
 	//Process Properties Dialog procedure
-	INT_PTR CALLBACK PropertiesDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+	INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 		static DWORD processPid = 0;
 		static ProcessInfo procInfo;
@@ -753,8 +760,8 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
 		if (selected == -1) 
 		{
-			MessageBox(hParent, L"Выберите процесс для просмотра свойств",
-				L"Информация", MB_OK | MB_ICONINFORMATION);
+			MessageBox(hParent, L"Select a process to view the properties",
+				L"Information", MB_OK | MB_ICONINFORMATION);
 			return;
 		}
 
@@ -769,7 +776,7 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			DWORD pid = (DWORD)lvi.lParam;
 			DialogBoxParam(g_hInstance,
 				MAKEINTRESOURCE(IDD_PROPERTIES_DIALOG),
-				hParent, PropertiesDlgProc, (LPARAM)pid);
+				hParent, PropertiesDialog, (LPARAM)pid);
 		}
 	}
 
@@ -820,19 +827,33 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 		HMENU hMenu = CreatePopupMenu();
 		if (!hMenu) return;
 
-		// Adding menu items
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 1, L"Update");
-		AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 2, L"End the process");
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 3, L"Complete the process tree");
-		AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 4, L"Process Properties");
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 5, L"Show modules (DLL)");
-		AppendMenu(hMenu, MF_STRING, IDM_PROCESS_MENU + 6, L"Exporting the list...");
+		int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+		BOOL hasSelecetion = (selected != -1);
 
-		//Show menu
-		TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+		AppendMenu(hMenu, MF_STRING, IDM_REFRESH, L"Update");
+		AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+		if (hasSelecetion) {
+			AppendMenu(hMenu, MF_STRING, IDM_KILL, L"End the process");
+			AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"Complete the process tree");
+			AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+			AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Process Properties");
+			AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show modules (DLL)");
+		}
+		else {
+			AppendMenu(hMenu, MF_STRING, IDM_KILL, L"End the process");
+			AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"Complete the process tree");
+			AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+			AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Process Properties");
+			AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show modules (DLL)");
+		}
+		AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+		AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Exporting the list...");
+
+		SetForegroundWindow(hWnd);
+		TrackPopupMenu(hMenu,
+			TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_TOPALIGN,
 			x, y, 0, hWnd, NULL);
+		PostMessage(hWnd, WM_NULL, 0, 0);  // Сбрасываем состояние меню
 
 		DestroyMenu(hMenu);
 	}
@@ -1372,20 +1393,4 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 			SendMessage(g_hStatusBar, SB_SETTEXT, 2, (LPARAM)timeStr); 
 		}
 	}
-/*
-// Заглушка для main (добавьте в самый конец файла)
-#ifdef _DEBUG
-// Для отладки: оставляем консоль
-	int main() {
-		HINSTANCE hInstance = GetModuleHandle(NULL);
-		return WinMain(hInstance, NULL, GetCommandLineA(), SW_SHOWDEFAULT);
-	}
-#else
-// Для релиза: без консоли
-	int __stdcall WinMainCRTStartup() {
-		HINSTANCE hInstance = GetModuleHandle(NULL);
-		int result = WinMain(hInstance, NULL, GetCommandLineA(), SW_SHOWDEFAULT);
-		ExitProcess(result);
-		return result;
-	}
-#endif*/
+

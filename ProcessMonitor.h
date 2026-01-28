@@ -113,3 +113,5 @@ void ShowSelectedProcessModules();
 void ExportProcessList();
 void KillProcessTree();
 int KillProcessTreeRecursive(DWORD parentPid, int depth);
+void ShowContextMenu(HWND hWnd, int x, int y);
+ProcessInfo GetDetailedProcessInfo(DWORD pid);
