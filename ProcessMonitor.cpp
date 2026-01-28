@@ -548,7 +548,7 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 
 	//Getting the process integrity level
 
-	std::wstring GetProcessorIntegrityLevel(DWORD pid) {
+	std::wstring GetProcessIntegrityLevel(DWORD pid) {
 		std::wstring integrity = L"Unknown";
 
 		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
@@ -634,7 +634,7 @@ int KillProcessTreeRecursive(DWORD parentPid, int depth) {
 	}
 
 	//Calculation of CPU usage
-	double CalculateCPUUSage(DWORD pid, FILETIME* prevKernel, FILETIME* prevUser) 
+	double CalculateCPUUsage(DWORD pid, FILETIME* prevKernel, FILETIME* prevUser) 
 	{
 		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
 		if (!hProcess) return 0.0;
