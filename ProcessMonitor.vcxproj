@@ -86,7 +86,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;psapi.lib;advapi32.lib;kernel32.lib;shell32.lib;comdlg32.lib;ntdll.lib</AdditionalDependencies>
+      <AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;psapi.lib;advapi32.lib;kernel32.lib;shell32.lib;comdlg32.lib;ntdll.lib;dbghelp.lib</AdditionalDependencies>
       <AdditionalManifestDependencies>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</AdditionalManifestDependencies>
       <ManifestFile>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</ManifestFile>
     </Link>
@@ -115,7 +115,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;psapi.lib;advapi32.lib;kernel32.lib;shell32.lib;comdlg32.lib;ntdll.lib</AdditionalDependencies>
+      <AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;psapi.lib;advapi32.lib;kernel32.lib;shell32.lib;comdlg32.lib;ntdll.lib;dbghelp.lib</AdditionalDependencies>
       <EntryPointSymbol>
       </EntryPointSymbol>
       <AdditionalManifestDependencies>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</AdditionalManifestDependencies>

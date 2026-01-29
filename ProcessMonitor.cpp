@@ -24,6 +24,7 @@
 #pragma comment(lib, "kernel32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "Dbghelp.lib")
 
 #include <stdio.h>
 #include <io.h>
@@ -48,6 +49,8 @@ AppState g_appState;
 std::vector<ProcessInfo> g_processes;
 std::vector<ProcessInfo> g_filteredProcesses;
 std::map<DWORD, CPUHistory> g_cpuHistory;
+HWND g_hMenuBar = NULL;
+std::map<DWORD, DWORD_PTR> g_processAffinity;
 
 // Многопоточные переменные
 std::thread g_updateThread;
@@ -151,12 +154,12 @@ BOOL InitApplication(HINSTANCE hInstance) {
     wcex.cbClsExtra = 0;
     wcex.cbWndExtra = 0;
     wcex.hInstance = hInstance;
-    wcex.hIcon = LoadIcon(hInstance, IDI_APPLICATION);
+    wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wcex.lpszMenuName = NULL;
+    wcex.lpszMenuName = MAKEINTRESOURCE(IDR_MAIN_MENU); // Используем меню
     wcex.lpszClassName = L"ProcessMonitorClass";
-    wcex.hIconSm = LoadIcon(hInstance, IDI_APPLICATION);
+    wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON_SMALL));
 
     return RegisterClassExW(&wcex);
 }
@@ -167,8 +170,8 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
     g_hMainWnd = CreateWindowW(
         L"ProcessMonitorClass",
-        L"Windows Process Monitor v2.0",
-        WS_OVERLAPPEDWINDOW,
+        L"Windows Process Monitor v2.0 - Miyori Code",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, 0, 1200, 700,
         nullptr, nullptr, hInstance, nullptr);
 
@@ -176,10 +179,517 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
         return FALSE;
     }
 
+    // Меню уже загружено через класс окна, так что убираем эту строку:
+    // g_hMenuBar = LoadMenu(hInstance, MAKEINTRESOURCE(IDR_MAIN_MENU));
+    // SetMenu(g_hMainWnd, g_hMenuBar);
+
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
     return TRUE;
 }
+
+// Новая функция: Открыть расположение файла
+void OpenFileLocation() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    std::wstring path(512, L'\0');
+    ListView_GetItemText(g_hProcessList, selected, 6, &path[0], 512);
+    path.resize(wcslen(path.c_str()));
+
+    if (path.empty() || path == L"N/A") {
+        MessageBox(g_hMainWnd, L"Cannot get file path", L"Error", MB_ICONERROR);
+        return;
+    }
+
+    // Извлекаем каталог из полного пути
+    size_t lastBackslash = path.find_last_of(L'\\');
+    if (lastBackslash != std::wstring::npos) {
+        std::wstring directory = path.substr(0, lastBackslash);
+
+        // Открываем папку в проводнике
+        SHELLEXECUTEINFO sei = { sizeof(sei) };
+        sei.fMask = SEE_MASK_DEFAULT;
+        sei.lpVerb = L"open";
+        sei.lpFile = directory.c_str();
+        sei.nShow = SW_SHOW;
+
+        if (!ShellExecuteEx(&sei)) {
+            MessageBox(g_hMainWnd, L"Cannot open file location", L"Error", MB_ICONERROR);
+        }
+    }
+}
+
+
+void SearchOnline() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) return;
+
+    std::wstring name(256, L'\0');
+    ListView_GetItemText(g_hProcessList, selected, 1, &name[0], 256);
+    name.resize(wcslen(name.c_str()));
+
+    // Формируем URL для поиска
+    std::wstring searchUrl = L"https://www.google.com/search?q=" + name + L"+process+windows";
+
+    ShellExecute(NULL, L"open", searchUrl.c_str(), NULL, NULL, SW_SHOW);
+}
+
+// Новая функция: Создать дамп процесса
+void CreateDumpFile() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Запрос имени файла для дампа
+    wchar_t szFile[MAX_PATH] = { 0 };
+    OPENFILENAME ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_hMainWnd;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"Dump Files (*.dmp)\0*.dmp\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrDefExt = L"dmp";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+
+    if (!GetSaveFileName(&ofn)) {
+        return;
+    }
+
+    CreateMiniDump(pid, szFile);
+}
+
+// Функция создания мини-дампа
+/*void CreateMiniDump(DWORD pid, const std::wstring& filePath) {
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hProcess) {
+        MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+        return;
+    }
+
+    HANDLE hFile = CreateFile(filePath.c_str(), GENERIC_WRITE, 0, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        CloseHandle(hProcess);
+        MessageBox(g_hMainWnd, L"Cannot create dump file", L"Error", MB_ICONERROR);
+        return;
+    }
+
+    // Создаем мини-дамп
+    MINIDUMP_EXCEPTION_INFORMATION mdei;
+    mdei.ThreadId = GetCurrentThreadId();
+    mdei.ExceptionPointers = NULL;
+    mdei.ClientPointers = FALSE;
+
+    MINIDUMP_TYPE mdt = (MINIDUMP_TYPE)(MiniDumpWithFullMemory |
+        MiniDumpWithHandleData |
+        MiniDumpWithUnloadedModules);
+
+    BOOL success = MiniDumpWriteDump(hProcess, pid, hFile, mdt,
+        NULL, NULL, NULL);
+
+    CloseHandle(hFile);
+    CloseHandle(hProcess);
+
+    if (success) {
+        MessageBox(g_hMainWnd, L"Dump file created successfully", L"Success", MB_ICONINFORMATION);
+    }
+    else {
+        MessageBox(g_hMainWnd, L"Failed to create dump file", L"Error", MB_ICONERROR);
+    }
+}
+*/
+
+// Новая функция: Перейти к службам
+void GoToServices() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        // Если процесс не выбран, просто открываем services.msc
+        ShellExecute(NULL, L"open", L"services.msc", NULL, NULL, SW_SHOW);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Попытка найти службы, связанные с процессом
+    ShellExecute(NULL, L"open", L"services.msc", NULL, NULL, SW_SHOW);
+
+    // Можно добавить более сложную логику позже
+    MessageBox(g_hMainWnd,
+        L"Service association feature is under development.\nServices console opened.",
+        L"Information", MB_ICONINFORMATION);
+}
+
+BOOL CreateMiniDump(DWORD pid, const wchar_t* filePath) {
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hProcess) {
+        MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+        return FALSE;
+    }
+
+    HANDLE hFile = CreateFile(filePath, GENERIC_WRITE, 0, NULL,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        CloseHandle(hProcess);
+        MessageBox(g_hMainWnd, L"Cannot create dump file", L"Error", MB_ICONERROR);
+        return FALSE;
+    }
+
+    // Создаем мини-дамп
+    MINIDUMP_EXCEPTION_INFORMATION mdei;
+    mdei.ThreadId = GetCurrentThreadId();
+    mdei.ExceptionPointers = NULL;
+    mdei.ClientPointers = FALSE;
+
+    MINIDUMP_TYPE mdt = (MINIDUMP_TYPE)(MiniDumpWithFullMemory |
+        MiniDumpWithHandleData |
+        MiniDumpWithUnloadedModules);
+
+    BOOL success = MiniDumpWriteDump(hProcess, pid, hFile, mdt,
+        NULL, NULL, NULL);
+
+    CloseHandle(hFile);
+    CloseHandle(hProcess);
+
+    if (success) {
+        MessageBox(g_hMainWnd, L"Dump file created successfully", L"Success", MB_ICONINFORMATION);
+        return TRUE;
+    }
+    else {
+        MessageBox(g_hMainWnd, L"Failed to create dump file", L"Error", MB_ICONERROR);
+        return FALSE;
+    }
+}
+
+// Новая функция: Установить приоритет процесса
+void SetProcessPriority(DWORD priorityClass) {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
+    if (!hProcess) {
+        MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+        return;
+    }
+
+    if (SetPriorityClass(hProcess, priorityClass)) {
+        std::wstring message = L"Process priority changed successfully";
+        UpdateStatusBar(message.c_str());
+        RefreshProcessList();
+    }
+    else {
+        MessageBox(g_hMainWnd, L"Failed to change process priority", L"Error", MB_ICONERROR);
+    }
+
+    CloseHandle(hProcess);
+}
+
+// Новая функция: Установить affinity (привязку к процессорам)
+void SetProcessAffinity() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Показываем диалог выбора процессоров
+    DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_AFFINITY_DIALOG),
+        g_hMainWnd, AffinityDialog, (LPARAM)pid);
+}
+
+// Новая функция: Запустить новую задачу
+void RunNewTask() {
+    DialogBox(g_hInstance, MAKEINTRESOURCE(IDD_RUNTASK_DIALOG), g_hMainWnd, RunTaskDialog);
+}
+
+INT_PTR CALLBACK RunTaskDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    static std::wstring filePath;
+    static std::wstring arguments;
+    static BOOL runAsAdmin = FALSE;
+
+    switch (message) {
+    case WM_INITDIALOG:
+        filePath.clear();
+        arguments.clear();
+        runAsAdmin = FALSE;
+        return TRUE;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case IDC_TASK_BROWSE: {
+            OPENFILENAME ofn;
+            wchar_t szFile[MAX_PATH] = { 0 };
+
+            ZeroMemory(&ofn, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hDlg;
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrFilter = L"Executable Files (*.exe)\0*.exe\0All Files (*.*)\0*.*\0";
+            ofn.nFilterIndex = 1;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+            if (GetOpenFileName(&ofn)) {
+                SetDlgItemText(hDlg, IDC_TASK_PATH, szFile);
+                filePath = szFile;
+            }
+            return TRUE;
+        }
+
+        case IDC_TASK_RUNASADMIN:
+            runAsAdmin = IsDlgButtonChecked(hDlg, IDC_TASK_RUNASADMIN);
+            return TRUE;
+
+        case IDOK: {
+            wchar_t buffer[MAX_PATH];
+
+            GetDlgItemText(hDlg, IDC_TASK_PATH, buffer, MAX_PATH);
+            filePath = buffer;
+
+            GetDlgItemText(hDlg, IDC_TASK_ARGS, buffer, MAX_PATH);
+            arguments = buffer;
+
+            if (filePath.empty()) {
+                MessageBox(hDlg, L"Please select a program to run", L"Error", MB_ICONERROR);
+                return TRUE;
+            }
+
+            // Запускаем программу
+            SHELLEXECUTEINFO sei = { sizeof(sei) };
+            sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+            sei.lpVerb = runAsAdmin ? L"runas" : NULL;
+            sei.lpFile = filePath.c_str();
+            sei.lpParameters = arguments.empty() ? NULL : arguments.c_str();
+            sei.nShow = SW_SHOW;
+
+            if (ShellExecuteEx(&sei)) {
+                MessageBox(hDlg, L"Task started successfully", L"Success", MB_ICONINFORMATION);
+                EndDialog(hDlg, IDOK);
+            }
+            else {
+                MessageBox(hDlg, L"Failed to start task", L"Error", MB_ICONERROR);
+            }
+            return TRUE;
+        }
+
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+
+    return FALSE;
+}
+
+
+INT_PTR CALLBACK AffinityDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    static DWORD pid;
+    static DWORD_PTR currentAffinity = 0;
+    static DWORD_PTR systemAffinity = 0;
+
+    switch (message) {
+    case WM_INITDIALOG: {
+        pid = (DWORD)lParam;
+
+        // Получаем текущую маску affinity
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+        if (hProcess) {
+            GetProcessAffinityMask(hProcess, &currentAffinity, &systemAffinity);
+            CloseHandle(hProcess);
+        }
+
+        // Устанавливаем флажки в зависимости от currentAffinity
+        for (int i = 0; i < 16; i++) {
+            if (systemAffinity & (1 << i)) {
+                EnableWindow(GetDlgItem(hDlg, IDC_AFFINITY_CPU0 + i), TRUE);
+
+                if (currentAffinity & (1 << i)) {
+                    CheckDlgButton(hDlg, IDC_AFFINITY_CPU0 + i, BST_CHECKED);
+                }
+            }
+            else {
+                EnableWindow(GetDlgItem(hDlg, IDC_AFFINITY_CPU0 + i), FALSE);
+            }
+        }
+
+        // Выбираем радиокнопку
+        if (currentAffinity == systemAffinity) {
+            CheckRadioButton(hDlg, IDC_AFFINITY_ALL, IDC_AFFINITY_CUSTOM, IDC_AFFINITY_ALL);
+        }
+        else {
+            CheckRadioButton(hDlg, IDC_AFFINITY_ALL, IDC_AFFINITY_CUSTOM, IDC_AFFINITY_CUSTOM);
+        }
+        return TRUE;
+    }
+
+    case WM_COMMAND: {
+        switch (LOWORD(wParam)) {
+        case IDC_AFFINITY_ALL: {
+            // Снимаем все флажки и блокируем их
+            for (int i = 0; i < 16; i++) {
+                if (IsWindowEnabled(GetDlgItem(hDlg, IDC_AFFINITY_CPU0 + i))) {
+                    CheckDlgButton(hDlg, IDC_AFFINITY_CPU0 + i, BST_UNCHECKED);
+                }
+            }
+            return TRUE;
+        }
+
+        case IDC_AFFINITY_CUSTOM: {
+            // Включаем возможность выбора
+            return TRUE;
+        }
+
+        case IDOK: {
+            DWORD_PTR newAffinity = 0;
+
+            if (IsDlgButtonChecked(hDlg, IDC_AFFINITY_ALL) == BST_CHECKED) {
+                newAffinity = systemAffinity;
+            }
+            else {
+                for (int i = 0; i < 16; i++) {
+                    if (IsDlgButtonChecked(hDlg, IDC_AFFINITY_CPU0 + i) == BST_CHECKED) {
+                        newAffinity |= (1 << i);
+                    }
+                }
+
+                // Проверяем, что выбран хотя бы один процессор
+                if (newAffinity == 0) {
+                    MessageBox(hDlg, L"Please select at least one CPU", L"Error", MB_ICONERROR);
+                    return TRUE;
+                }
+            }
+
+            // Применяем новую маску affinity
+            HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
+            if (hProcess) {
+                if (SetProcessAffinityMask(hProcess, newAffinity)) {
+                    MessageBox(hDlg, L"Affinity set successfully", L"Success", MB_ICONINFORMATION);
+                    EndDialog(hDlg, IDOK);
+                }
+                else {
+                    MessageBox(hDlg, L"Failed to set affinity", L"Error", MB_ICONERROR);
+                }
+                CloseHandle(hProcess);
+            }
+            else {
+                MessageBox(hDlg, L"Cannot open process", L"Error", MB_ICONERROR);
+            }
+            return TRUE;
+        }
+
+        case IDCANCEL: {
+            EndDialog(hDlg, IDCANCEL);
+            return TRUE;
+        }
+        }
+        break;
+    }
+    }
+
+    return FALSE;
+}
+
+INT_PTR CALLBACK AboutDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_INITDIALOG:
+        return TRUE;
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, LOWORD(wParam));
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+
+// Новая функция: Показать About диалог
+void ShowAboutDialog() {
+    MessageBox(g_hMainWnd,
+        L"Windows Process Monitor v2.0\n\n"
+        L"Publisher: Miyori Code\n"
+        L"Copyright © 2024 Miyori Code\n\n"
+        L"A powerful process management tool for Windows\n"
+        L"with real-time monitoring capabilities.",
+        L"About Process Monitor",
+        MB_OK | MB_ICONINFORMATION);
+}
+
+// Новая функция: Переключить "Always on Top"
+void ToggleAlwaysOnTop() {
+    g_appState.alwaysOnTop = !g_appState.alwaysOnTop;
+
+    SetWindowPos(g_hMainWnd,
+        g_appState.alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
+        0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE);
+
+    // Обновляем меню
+    HMENU hMenu = GetMenu(g_hMainWnd);
+    if (hMenu) {
+        CheckMenuItem(hMenu, IDM_ALWAYSONTOP,
+            MF_BYCOMMAND | (g_appState.alwaysOnTop ? MF_CHECKED : MF_UNCHECKED));
+    }
+}
+
+
 
 // Process tree completion function
 int KillProcessTreeRecursive(DWORD parentPid, BOOL killParent) {
@@ -1106,22 +1616,60 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
     BOOL hasSelection = (selected != -1);
 
     if (hasSelection) {
-        AppendMenu(hMenu, MF_STRING, IDM_KILL, L"Kill process");
-        AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"Kill process tree");
+        // Основные операции
+        AppendMenu(hMenu, MF_STRING, IDM_KILL, L"End Task");
+        AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"End Process Tree");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Process properties");
-        AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show modules (DLL)");
+
+        // Подменю Priority
+        HMENU hPriorityMenu = CreatePopupMenu();
+        AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_REALTIME, L"Realtime");
+        AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_HIGH, L"High");
+        AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_ABOVENORMAL, L"Above Normal");
+        AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_NORMAL, L"Normal");
+        AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_BELOWNORMAL, L"Below Normal");
+        AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_IDLE, L"Idle");
+        AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hPriorityMenu, L"Set Priority");
+
+        AppendMenu(hMenu, MF_STRING, IDM_AFFINITY, L"Set Affinity...");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hMenu, MF_STRING, IDM_COPYPID, L"Copy PID");
-        AppendMenu(hMenu, MF_STRING, IDM_COPYNAME, L"Copy name");
-        AppendMenu(hMenu, MF_STRING, IDM_COPYPATH, L"Copy path");
+
+        // Анализ и диагностика
+        AppendMenu(hMenu, MF_STRING, IDM_CREATEDUMP, L"Create Dump File");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // Информация
+        AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Properties");
+        AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show Modules (DLL)");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // Быстрые действия
+        AppendMenu(hMenu, MF_STRING, IDM_OPENFILELOCATION, L"Open File Location");
+        AppendMenu(hMenu, MF_STRING, IDM_SEARCHONLINE, L"Search Online");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // Копирование
+        HMENU hCopyMenu = CreatePopupMenu();
+        AppendMenu(hCopyMenu, MF_STRING, IDM_COPYPID, L"Copy PID");
+        AppendMenu(hCopyMenu, MF_STRING, IDM_COPYNAME, L"Copy Process Name");
+        AppendMenu(hCopyMenu, MF_STRING, IDM_COPYPATH, L"Copy Full Path");
+        AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hCopyMenu, L"Copy");
     }
 
     AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-    AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Export list...");
+    AppendMenu(hMenu, MF_STRING, IDM_CREATENEWTASK, L"Run New Task...");
+    AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Export List...");
+
+    // Установка шрифта и стилей
+    NONCLIENTMETRICS ncm = { sizeof(NONCLIENTMETRICS) };
+    SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0);
 
     SetForegroundWindow(hWnd);
-    UINT cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, x, y, 0, hWnd, NULL);
+
+    // Показываем меню
+    UINT cmd = TrackPopupMenuEx(hMenu,
+        TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NOANIMATION,
+        x, y, hWnd, NULL);
 
     if (cmd != 0) {
         SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
@@ -1342,6 +1890,30 @@ void CreateMainWindowControls(HWND hWnd) {
     g_newDataAvailable = true;
 }
 
+void ToggleAutoRefresh() {
+    g_appState.autoRefresh = !g_appState.autoRefresh;
+
+    if (g_appState.autoRefresh) {
+        StartRealTimeUpdates();
+        UpdateStatusBar(L"Auto refresh enabled");
+    }
+    else {
+        StopRealTimeUpdates();
+        UpdateStatusBar(L"Auto refresh disabled");
+    }
+}
+
+void ToggleShowAllUsers() {
+    g_appState.showAllUsers = !g_appState.showAllUsers;
+
+    // Обновляем список процессов
+    RefreshProcessList();
+
+    UpdateStatusBar(g_appState.showAllUsers ?
+        L"Showing processes from all users" :
+        L"Showing only current user processes");
+}
+
 // Main window procedur
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
@@ -1483,12 +2055,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         int wmId = LOWORD(wParam);
 
         switch (wmId) {
-        case IDC_KILL_BTN:
+        case IDC_KILL_BTN: {
             KillSelectedProcess();
             break;
+        }
 
-        case IDC_SEARCH_BTN:
-        {
+        case IDC_SEARCH_BTN: {
             wchar_t filter[256];
             GetWindowText(g_hFilterEdit, filter, 256);
             g_appState.filterText = filter;
@@ -1502,25 +2074,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
         }
 
-        case IDM_KILL:
+        case IDM_KILL: {
             KillSelectedProcess();
             break;
+        }
 
-        case IDM_KILL_TREE:
+        case IDM_KILL_TREE: {
             KillProcessTree();
             break;
+        }
 
-        case IDM_PROPERTIES:
+        case IDM_PROPERTIES: {
             ShowProcessProperties(hWnd);
             break;
+        }
 
-        case IDM_MODULES:
+        case IDM_MODULES: {
             ShowSelectedProcessModules();
             break;
+        }
 
-        case IDM_EXPORT:
+        case IDM_EXPORT: {
             DialogBox(g_hInstance, MAKEINTRESOURCE(IDD_EXPORT_DIALOG), hWnd, ExportDialog);
             break;
+        }
 
         case IDM_COPYPID: {
             int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
@@ -1555,6 +2132,162 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 CopyToClipboard(path);
                 UpdateStatusBar(L"Path copied to clipboard");
             }
+            break;
+        }
+
+        case IDM_OPENFILELOCATION: {
+            OpenFileLocation();
+            break;
+        }
+
+        case IDM_SEARCHONLINE: {
+            SearchOnline();
+            break;
+        }
+
+        case IDM_CREATEDUMP: {
+            int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+            if (selected == -1) {
+                MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+                break;
+            }
+
+            LVITEM lvi;
+            ZeroMemory(&lvi, sizeof(LVITEM));
+            lvi.iItem = selected;
+            lvi.mask = LVIF_PARAM;
+
+            if (!ListView_GetItem(g_hProcessList, &lvi)) {
+                break;
+            }
+
+            DWORD pid = (DWORD)lvi.lParam;
+
+            // Запрос имени файла для дампа
+            wchar_t szFile[MAX_PATH] = { 0 };
+            OPENFILENAME ofn;
+            ZeroMemory(&ofn, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = g_hMainWnd;
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrFilter = L"Dump Files (*.dmp)\0*.dmp\0All Files (*.*)\0*.*\0";
+            ofn.nFilterIndex = 1;
+            ofn.lpstrDefExt = L"dmp";
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+
+            if (!GetSaveFileName(&ofn)) {
+                break;
+            }
+
+            CreateMiniDump(pid, szFile);
+            break;
+        }
+
+        case IDM_GOTOSERVICES: {
+            int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+            if (selected == -1) {
+                // Если процесс не выбран, просто открываем services.msc
+                ShellExecute(NULL, L"open", L"services.msc", NULL, NULL, SW_SHOW);
+                break;
+            }
+
+            LVITEM lvi;
+            ZeroMemory(&lvi, sizeof(LVITEM));
+            lvi.iItem = selected;
+            lvi.mask = LVIF_PARAM;
+
+            if (!ListView_GetItem(g_hProcessList, &lvi)) {
+                break;
+            }
+
+            DWORD pid = (DWORD)lvi.lParam;
+
+            // Попытка найти службы, связанные с процессом
+            ShellExecute(NULL, L"open", L"services.msc", NULL, NULL, SW_SHOW);
+
+            MessageBox(g_hMainWnd,
+                L"Service association feature is under development.\nServices console opened.",
+                L"Information", MB_ICONINFORMATION);
+            break;
+        }
+
+        case IDM_CREATENEWTASK: {
+            RunNewTask();
+            break;
+        }
+
+        case IDM_ABOUT: {
+            ShowAboutDialog();
+            break;
+        }
+
+        case IDM_ALWAYSONTOP: {
+            ToggleAlwaysOnTop();
+            break;
+        }
+
+        case IDM_AUTOREFRESH: {
+            ToggleAutoRefresh();
+            break;
+        }
+
+        case IDM_SHOWALLUSERS: {
+            ToggleShowAllUsers();
+            break;
+        }
+
+        case IDM_EXIT: {
+            DestroyWindow(hWnd);
+            break;
+        }
+
+                     // Приоритеты
+        case IDM_PRIORITY_REALTIME: {
+            SetProcessPriority(REALTIME_PRIORITY_CLASS);
+            break;
+        }
+
+        case IDM_PRIORITY_HIGH: {
+            SetProcessPriority(HIGH_PRIORITY_CLASS);
+            break;
+        }
+
+        case IDM_PRIORITY_ABOVENORMAL: {
+            SetProcessPriority(ABOVE_NORMAL_PRIORITY_CLASS);
+            break;
+        }
+
+        case IDM_PRIORITY_NORMAL: {
+            SetProcessPriority(NORMAL_PRIORITY_CLASS);
+            break;
+        }
+
+        case IDM_PRIORITY_BELOWNORMAL: {
+            SetProcessPriority(BELOW_NORMAL_PRIORITY_CLASS);
+            break;
+        }
+
+        case IDM_PRIORITY_IDLE: {
+            SetProcessPriority(IDLE_PRIORITY_CLASS);
+            break;
+        }
+
+        case IDM_AFFINITY: {
+            SetProcessAffinity();
+            break;
+        }
+
+        case IDM_MINIMIZEONCLOSE: {
+            g_appState.minimizeOnClose = !g_appState.minimizeOnClose;
+            UpdateStatusBar(g_appState.minimizeOnClose ?
+                L"Minimize on close enabled" :
+                L"Minimize on close disabled");
+            break;
+        }
+
+        case IDM_REFRESH: {
+            RefreshProcessList();
             break;
         }
 
