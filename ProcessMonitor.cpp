@@ -1,5 +1,5 @@
 ﻿#define WIN32_LEAN_AND_MEAN
-#define _WIN32_WINNT 0x0600  // Windows Vista for QueryFullProcessImageNameW
+#define _WIN32_WINNT 0x0600
 #include <windows.h>
 #include <commctrl.h>
 #include <psapi.h>
@@ -10,7 +10,11 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
-#include <iomanip>  // For std::setw, std::setfill
+#include <iomanip>  // Добавлено
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -38,22 +42,39 @@ HWND g_hModuleList = NULL;
 HWND g_hTabControl = NULL;
 HWND g_hStatusBar = NULL;
 HWND g_hFilterEdit = NULL;
-HWND g_hSortCombo = NULL;
-HWND g_hPerformanceWnd = NULL;
+HWND g_hPerformanceWnd = NULL;  // Добавлено
+HINSTANCE g_hInstance;
+AppState g_appState;
 std::vector<ProcessInfo> g_processes;
 std::vector<ProcessInfo> g_filteredProcesses;
-HINSTANCE g_hInstance;
-AppState g_appState = { FALSE, 2000, L"", 1, TRUE };
 std::map<DWORD, CPUHistory> g_cpuHistory;
-ULONGLONG g_totalMemory = 0;
-ULONGLONG g_availableMemory = 0;
 
-#define MIN_WINDOW_WIDTH 800
-#define MIN_WINDOW_HEIGHT 600
+// Многопоточные переменные
+std::thread g_updateThread;
+std::atomic<bool> g_updateThreadRunning(false);
+std::atomic<bool> g_updateThreadStopRequest(false);
+std::mutex g_processDataMutex;
+std::condition_variable g_dataReadyCond;
+bool g_newDataAvailable = false;
+DWORD g_lastUpdateTick = 0;
 
 // Helper macros for coordinates
 #define GET_X_LPARAM(lParam) ((int)(short)LOWORD(lParam))
 #define GET_Y_LPARAM(lParam) ((int)(short)HIWORD(lParam))
+
+// Минимальные размеры окна
+#define MIN_WINDOW_WIDTH 800
+#define MIN_WINDOW_HEIGHT 600
+
+
+// Прототипы функций, которые были объявлены, но не определены
+void RefreshProcessList();
+void UpdateStatusBar(const wchar_t* text);
+void ShowProcessModules(HWND hList, DWORD pid);
+void RefreshListViewFromData(HWND hList, const std::vector<ProcessInfo>& processes);
+void StartRealTimeUpdates();
+void StopRealTimeUpdates();
+void CheckForDataUpdates();
 
 BOOL IsRunAsAdministrator() {
     BOOL fIsRunAsAdmin = FALSE;
@@ -236,7 +257,7 @@ void KillProcessTree() {
         std::wstring status = L"Complete processes: " + std::to_wstring(killedCount);
         UpdateStatusBar(status.c_str());
 
-        RefreshProcessList(g_hProcessList);
+        RefreshProcessList();
     }
 }
 
@@ -1003,7 +1024,7 @@ void KillSelectedProcess() {
 
                     g_cpuHistory.erase(pid);
 
-                    RefreshProcessList(g_hProcessList);
+                    RefreshProcessList();
                 }
                 else {
                     DWORD error = GetLastError();
@@ -1048,20 +1069,19 @@ BOOL EnableDebugPrivilege() {
     return result && GetLastError() == ERROR_SUCCESS;
 }
 
-//UpdateStatusBar
+// Обновление статус-бара
 void UpdateStatusBar(const wchar_t* text) {
     if (g_hStatusBar) {
         SendMessage(g_hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
         SendMessage(g_hStatusBar, SB_SETTEXT, 1, (LPARAM)L"Windows Process Monitor v2.0");
 
+        // Обновляем время и память
         SYSTEMTIME st;
         GetLocalTime(&st);
-
         std::wstringstream timeStream;
         timeStream << std::setw(2) << std::setfill(L'0') << st.wHour << L":"
             << std::setw(2) << std::setfill(L'0') << st.wMinute << L":"
             << std::setw(2) << std::setfill(L'0') << st.wSecond;
-
         SendMessage(g_hStatusBar, SB_SETTEXT, 2, (LPARAM)timeStream.str().c_str());
 
         MEMORYSTATUSEX memInfo;
@@ -1073,7 +1093,6 @@ void UpdateStatusBar(const wchar_t* text) {
             << L"Memory: "
             << (float)(memInfo.ullTotalPhys - memInfo.ullAvailPhys) / memInfo.ullTotalPhys * 100.0f
             << L"% used";
-
         SendMessage(g_hStatusBar, SB_SETTEXT, 3, (LPARAM)memStream.str().c_str());
     }
 }
@@ -1085,9 +1104,6 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
 
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     BOOL hasSelection = (selected != -1);
-
-    AppendMenu(hMenu, MF_STRING, IDM_REFRESH, L"Refresh");
-    AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
     if (hasSelection) {
         AppendMenu(hMenu, MF_STRING, IDM_KILL, L"Kill process");
@@ -1103,8 +1119,6 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
 
     AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Export list...");
-    AppendMenu(hMenu, MF_STRING, IDM_AUTOREFRESH,
-        g_appState.autoRefresh ? L"Disable auto-refresh" : L"Enable auto-refresh");
 
     SetForegroundWindow(hWnd);
     UINT cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, x, y, 0, hWnd, NULL);
@@ -1127,96 +1141,16 @@ void AutoSizeListViewColumns(HWND hListView) {
 }
 
 // RefreshProcessList
-void RefreshProcessList(HWND hList) {
-    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
-    DWORD selectedPid = 0;
-    if (selected != -1) {
-        LVITEM lvi;
-        ZeroMemory(&lvi, sizeof(LVITEM));
-        lvi.iItem = selected;
-        lvi.mask = LVIF_PARAM;
-        if (ListView_GetItem(g_hProcessList, &lvi)) {
-            selectedPid = (DWORD)lvi.lParam;
-        }
-    }
-
-    ListView_DeleteAllItems(hList);
-    g_processes = GetProcessesList();
-
-    g_filteredProcesses = g_processes;
-    if (!g_appState.filterText.empty()) {
-        ApplyFilter(g_filteredProcesses, g_appState.filterText);
-    }
-
-    SortProcessList(g_filteredProcesses, g_appState.sortColumn, g_appState.sortAscending);
-
-    std::vector<ProcessInfo>& displayList = g_filteredProcesses.empty() ? g_processes : g_filteredProcesses;
-
-    for (size_t i = 0; i < displayList.size(); i++) {
-        const ProcessInfo& proc = displayList[i];
-
-        LVITEM lvi;
-        ZeroMemory(&lvi, sizeof(LVITEM));
-        lvi.mask = LVIF_TEXT | LVIF_PARAM;
-        lvi.iItem = (int)i;
-        lvi.iSubItem = 0;
-
-        std::wstring pidStr = std::to_wstring(proc.pid);
-        lvi.pszText = const_cast<LPWSTR>(pidStr.c_str());
-        lvi.lParam = proc.pid;
-        ListView_InsertItem(hList, &lvi);
-
-        ListView_SetItemText(hList, i, 1, const_cast<LPWSTR>(proc.name.c_str()));
-        ListView_SetItemText(hList, i, 2, const_cast<LPWSTR>(proc.userName.c_str()));
-
-        // Memory
-        std::wstringstream memoryStream;
-        memoryStream << std::fixed << std::setprecision(1) << (proc.workingSetSize / (1024.0 * 1024.0));
-        std::wstring memoryStr = memoryStream.str();
-        ListView_SetItemText(hList, i, 3, const_cast<LPWSTR>(memoryStr.c_str()));
-
-        // Threads
-        std::wstring threadsStr = std::to_wstring(proc.threadCount);
-        ListView_SetItemText(hList, i, 4, const_cast<LPWSTR>(threadsStr.c_str()));
-
-        // CPU Usage
-        std::wstringstream cpuStream;
-        cpuStream << std::fixed << std::setprecision(1) << proc.cpuUsage;
-        std::wstring cpuStr = cpuStream.str();
-        ListView_SetItemText(hList, i, 5, const_cast<LPWSTR>(cpuStr.c_str()));
-
-        ListView_SetItemText(hList, i, 6, const_cast<LPWSTR>(proc.fullPath.c_str()));
-    }
-
-    if (selectedPid != 0) {
-        for (int i = 0; i < ListView_GetItemCount(hList); i++) {
-            LVITEM lvi;
-            ZeroMemory(&lvi, sizeof(LVITEM));
-            lvi.iItem = i;
-            lvi.mask = LVIF_PARAM;
-            ListView_GetItem(hList, &lvi);
-
-            if ((DWORD)lvi.lParam == selectedPid) {
-                ListView_SetItemState(hList, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(hList, i, FALSE);
-                break;
-            }
-        }
-    }
-
-    for (int i = 0; i < 7; i++) {
-        ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE_USEHEADER);
-    }
-
-    std::wstringstream statusStream;
-    statusStream << L"Processes: " << g_processes.size()
-        << L" (Filtered: " << displayList.size() << L")";
-    UpdateStatusBar(statusStream.str().c_str());
-    AutoSizeListViewColumns(hList);
+void RefreshProcessList() {
+    // Просто устанавливаем флаг для обновления
+    std::lock_guard<std::mutex> lock(g_processDataMutex);
+    g_newDataAvailable = true;
 }
 
 // ShowProcessModules
 void ShowProcessModules(HWND hList, DWORD pid) {
+    if (!hList) return;
+
     ListView_DeleteAllItems(hList);
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
@@ -1248,41 +1182,6 @@ void ShowProcessModules(HWND hList, DWORD pid) {
     }
 }
 
-// ToggleAutoRefresh
-void ToggleAutoRefresh() {
-    g_appState.autoRefresh = !g_appState.autoRefresh;
-
-    // hAutoRefreshBtn
-    HWND hAutoRefreshBtn = GetDlgItem(g_hMainWnd, IDC_AUTOREFRESH_BTN);
-    if (hAutoRefreshBtn) {
-        SetWindowText(hAutoRefreshBtn,
-            g_appState.autoRefresh ? L"Stop auto-refresh" : L"Auto-refresh");
-    }
-
-    if (g_appState.autoRefresh) {
-        SetTimer(g_hMainWnd, IDT_AUTOREFRESH_TIMER, g_appState.refreshInterval, NULL);
-        UpdateStatusBar(L"Auto-refresh: ON");
-    }
-    else {
-        KillTimer(g_hMainWnd, IDT_AUTOREFRESH_TIMER);
-        UpdateStatusBar(L"Auto-refresh: OFF");
-    }
-}
-
-// ApplyFilter
-void ApplyFilterToUI() {
-    std::wstring filter(256, L'\0');
-    GetWindowText(g_hFilterEdit, &filter[0], 256);
-    filter.resize(wcslen(filter.c_str()));
-    g_appState.filterText = filter;
-    RefreshProcessList(g_hProcessList);
-}
-
-// UpdateSorting
-void UpdateSorting() {
-    RefreshProcessList(g_hProcessList);
-}
-
 // ApplyListViewStyle
 void ApplyListViewStyle(HWND hListView) {
     // Using standart styles, bcs LVS_EX_AUTOSIZECOLUMNS not exist
@@ -1295,8 +1194,7 @@ void CreateMainWindowControls(HWND hWnd) {
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
 
-
-    // Instrument panel
+    // Панель инструментов
     int buttonHeight = 30;
     int buttonSpacing = 10;
     int panelHeight = 40;
@@ -1306,31 +1204,17 @@ void CreateMainWindowControls(HWND hWnd) {
         0, 0, rcClient.right, panelHeight,
         hWnd, (HMENU)1000, g_hInstance, NULL);
 
-
-
     int x = buttonSpacing;
     int y = (panelHeight - buttonHeight) / 2;
 
-
-    CreateWindow(L"BUTTON", L"Refresh",
+    // Только кнопка Kill
+    CreateWindow(L"BUTTON", L"Kill Process",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, y, 80, buttonHeight, hWnd, (HMENU)IDC_REFRESH_BTN,
+        x, y, 100, buttonHeight, hWnd, (HMENU)IDC_KILL_BTN,
         g_hInstance, NULL);
-    x += 80 + buttonSpacing;
+    x += 100 + buttonSpacing;
 
-    CreateWindow(L"BUTTON", L"Kill",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, y, 80, buttonHeight, hWnd, (HMENU)IDC_KILL_BTN,
-        g_hInstance, NULL);
-    x += 80 + buttonSpacing;
-
-    CreateWindow(L"BUTTON", g_appState.autoRefresh ? L"Stop auto-refresh" : L"Auto-refresh",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, y, 120, buttonHeight, hWnd, (HMENU)IDC_AUTOREFRESH_BTN,
-        g_hInstance, NULL);
-    x += 120 + buttonSpacing;
-
-    // Filter group
+    // Поле фильтра
     CreateWindow(L"STATIC", L"Filter:",
         WS_CHILD | WS_VISIBLE,
         x, y + 3, 35, 20, hWnd, NULL, g_hInstance, NULL);
@@ -1338,15 +1222,16 @@ void CreateMainWindowControls(HWND hWnd) {
 
     g_hFilterEdit = CreateWindow(L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        x, y, 150, buttonHeight, hWnd, (HMENU)IDC_FILTER_EDIT,
+        x, y, 200, buttonHeight, hWnd, (HMENU)IDC_FILTER_EDIT,
         g_hInstance, NULL);
-    x += 150 + buttonSpacing;
+    x += 200 + buttonSpacing;
 
-    CreateWindow(L"BUTTON", L"Search",
+    CreateWindow(L"BUTTON", L"Apply Filter",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, y, 80, buttonHeight, hWnd, (HMENU)IDC_SEARCH_BTN,
+        x, y, 100, buttonHeight, hWnd, (HMENU)IDC_SEARCH_BTN,
         g_hInstance, NULL);
 
+    // Tab Control
     g_hTabControl = CreateWindowEx(0, WC_TABCONTROL, L"",
         WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
         0, panelHeight, rcClient.right, rcClient.bottom - panelHeight - 20,
@@ -1362,11 +1247,12 @@ void CreateMainWindowControls(HWND hWnd) {
         TabCtrl_InsertItem(g_hTabControl, i, &tie);
     }
 
+    // Получаем область для содержимого таба
     RECT rcTab;
     GetClientRect(g_hTabControl, &rcTab);
     TabCtrl_AdjustRect(g_hTabControl, FALSE, &rcTab);
 
-    // ListView for processes
+    // ListView для процессов
     g_hProcessList = CreateWindowEx(0, WC_LISTVIEW, L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
         rcTab.left, rcTab.top,
@@ -1377,7 +1263,7 @@ void CreateMainWindowControls(HWND hWnd) {
 
     ApplyListViewStyle(g_hProcessList);
 
-    // Columns ListView 
+    // Столбцы ListView
     struct ColumnInfo {
         const wchar_t* name;
         int width;
@@ -1402,7 +1288,7 @@ void CreateMainWindowControls(HWND hWnd) {
         ListView_InsertColumn(g_hProcessList, i, &lvc);
     }
 
-    // ListView for moduls
+    // ListView для модулей
     g_hModuleList = CreateWindowEx(0, WC_LISTVIEW, L"",
         WS_CHILD | WS_BORDER | LVS_REPORT,
         rcTab.left, rcTab.top,
@@ -1423,7 +1309,7 @@ void CreateMainWindowControls(HWND hWnd) {
         ListView_InsertColumn(g_hModuleList, i, &lvc);
     }
 
-    // Performance window
+    // Окно производительности
     g_hPerformanceWnd = CreateWindow(L"STATIC", L"Performance metrics will be displayed here",
         WS_CHILD | WS_BORDER | SS_CENTER,
         rcTab.left, rcTab.top,
@@ -1431,23 +1317,34 @@ void CreateMainWindowControls(HWND hWnd) {
         rcTab.bottom - rcTab.top,
         g_hTabControl, NULL, g_hInstance, NULL);
 
+    // Скрываем ненужные вкладки
     ShowWindow(g_hModuleList, SW_HIDE);
     ShowWindow(g_hPerformanceWnd, SW_HIDE);
 
-    // status bar
+    // Статус-бар
     g_hStatusBar = CreateWindowEx(0, STATUSCLASSNAME, NULL,
         WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
         0, 0, 0, 0, hWnd, NULL, g_hInstance, NULL);
 
-    // status bar parts
-    int parts[] = { 200, 400, 600, 800, -1 };
+    // Части статус-бара (пропорционально ширине окна)
+    int parts[5];
+    parts[0] = rcClient.right * 25 / 100;   // 25% для статуса
+    parts[1] = rcClient.right * 50 / 100;   // 50% для версии
+    parts[2] = rcClient.right * 65 / 100;   // 65% для времени
+    parts[3] = rcClient.right * 80 / 100;   // 80% для памяти
+    parts[4] = -1;
     SendMessage(g_hStatusBar, SB_SETPARTS, 5, (LPARAM)parts);
+
+    // Инициализация данных
+    std::lock_guard<std::mutex> lock(g_processDataMutex);
+    g_processes = GetProcessesList();
+    g_filteredProcesses = g_processes;
+    g_newDataAvailable = true;
 }
 
 // Main window procedur
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
-
     case WM_GETMINMAXINFO:
     {
         LPMINMAXINFO pMMI = (LPMINMAXINFO)lParam;
@@ -1459,8 +1356,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_CREATE:
         CreateMainWindowControls(hWnd);
         EnableDebugPrivilege();
-        RefreshProcessList(g_hProcessList);
-        UpdateStatusBar(L"Ready");
+
+        // Запускаем реальное обновление
+        StartRealTimeUpdates();
+
+        // Запускаем таймер для обновления UI
+        SetTimer(hWnd, 1, UI_UPDATE_INTERVAL, NULL);
+
+        UpdateStatusBar(L"Real-time monitoring started");
         break;
 
     case WM_SIZE:
@@ -1468,41 +1371,33 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         RECT rcClient;
         GetClientRect(hWnd, &rcClient);
 
-        if (rcClient.right < MIN_WINDOW_WIDTH) rcClient.right = MIN_WINDOW_WIDTH;
-        if (rcClient.bottom < MIN_WINDOW_HEIGHT) rcClient.bottom = MIN_WINDOW_HEIGHT;
-
-        int panelHeight = 40;
-        int statusBarHeight = 20;
-
-        // Updating status bar
+        // Обновляем статус-бар
         if (g_hStatusBar) {
             SendMessage(g_hStatusBar, WM_SIZE, 0, 0);
 
-            
-            int parts[] = {
-                rcClient.right / 4,
-                rcClient.right / 2,
-                rcClient.right * 3 / 4,
-                rcClient.right - 100,
-                -1
-            };
+            // Пересчитываем части статус-бара
+            int parts[5];
+            parts[0] = rcClient.right * 25 / 100;   // 25% для статуса
+            parts[1] = rcClient.right * 50 / 100;   // 50% для версии
+            parts[2] = rcClient.right * 65 / 100;   // 65% для времени
+            parts[3] = rcClient.right * 80 / 100;   // 80% для памяти
+            parts[4] = -1;
             SendMessage(g_hStatusBar, SB_SETPARTS, 5, (LPARAM)parts);
         }
 
-        // Updating instrument panel
+        // Обновляем панель инструментов
         HWND hButtonPanel = GetDlgItem(hWnd, 1000);
         if (hButtonPanel) {
-            SetWindowPos(hButtonPanel, NULL, 0, 0, rcClient.right, panelHeight, SWP_NOZORDER);
+            SetWindowPos(hButtonPanel, NULL, 0, 0, rcClient.right, 40, SWP_NOZORDER);
         }
 
-        // Updating Tab Control
+        // Обновляем Tab Control
         if (g_hTabControl) {
             SetWindowPos(g_hTabControl, NULL,
-                0, panelHeight,
-                rcClient.right, rcClient.bottom - panelHeight - statusBarHeight,
+                0, 40,
+                rcClient.right, rcClient.bottom - 60,
                 SWP_NOZORDER);
 
-            
             RECT rcTab;
             GetClientRect(g_hTabControl, &rcTab);
             TabCtrl_AdjustRect(g_hTabControl, FALSE, &rcTab);
@@ -1515,10 +1410,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     rcTab.left, rcTab.top,
                     tabWidth, tabHeight,
                     SWP_NOZORDER);
-
-                for (int i = 0; i < 7; i++) {
-                    ListView_SetColumnWidth(g_hProcessList, i, LVSCW_AUTOSIZE_USEHEADER);
-                }
             }
 
             if (g_hModuleList && IsWindowVisible(g_hModuleList)) {
@@ -1526,10 +1417,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     rcTab.left, rcTab.top,
                     tabWidth, tabHeight,
                     SWP_NOZORDER);
-
-                for (int i = 0; i < 2; i++) {
-                    ListView_SetColumnWidth(g_hModuleList, i, LVSCW_AUTOSIZE_USEHEADER);
-                }
             }
 
             if (g_hPerformanceWnd && IsWindowVisible(g_hPerformanceWnd)) {
@@ -1543,8 +1430,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     }
 
     case WM_TIMER:
-        if (wParam == IDT_AUTOREFRESH_TIMER && g_appState.autoRefresh) {
-            RefreshProcessList(g_hProcessList);
+        if (wParam == 1) {
+            CheckForDataUpdates();
         }
         break;
 
@@ -1553,12 +1440,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         LPNMHDR lpnmh = (LPNMHDR)lParam;
 
         if (lpnmh->idFrom == IDC_PROCESS_LIST) {
-            if (lpnmh->code == LVN_ITEMCHANGED) {
-                LPNMLISTVIEW pnmv = (LPNMLISTVIEW)lParam;
-                if (pnmv->uNewState & LVIS_SELECTED) {
-                }
-            }
-            else if (lpnmh->code == LVN_COLUMNCLICK) {
+            if (lpnmh->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW pnmv = (LPNMLISTVIEW)lParam;
                 if (g_appState.sortColumn == pnmv->iSubItem) {
                     g_appState.sortAscending = !g_appState.sortAscending;
@@ -1567,7 +1449,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     g_appState.sortColumn = pnmv->iSubItem;
                     g_appState.sortAscending = TRUE;
                 }
-                UpdateSorting();
+
+                // Применяем новую сортировку
+                std::lock_guard<std::mutex> lock(g_processDataMutex);
+                SortProcessList(g_filteredProcesses, g_appState.sortColumn, g_appState.sortAscending);
+                g_newDataAvailable = true;
             }
         }
         else if (lpnmh->idFrom == IDC_TAB_CONTROL && lpnmh->code == TCN_SELCHANGE) {
@@ -1579,19 +1465,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             switch (sel) {
             case 0: // Processes
-                if (g_hProcessList) {
-                    ShowWindow(g_hProcessList, SW_SHOW);
-                }
+                if (g_hProcessList) ShowWindow(g_hProcessList, SW_SHOW);
                 break;
             case 1: // Modules
-                if (g_hModuleList) {
-                    ShowWindow(g_hModuleList, SW_SHOW);
-                }
+                if (g_hModuleList) ShowWindow(g_hModuleList, SW_SHOW);
                 break;
             case 2: // Performance
-                if (g_hPerformanceWnd) {
-                    ShowWindow(g_hPerformanceWnd, SW_SHOW);
-                }
+                if (g_hPerformanceWnd) ShowWindow(g_hPerformanceWnd, SW_SHOW);
                 break;
             }
         }
@@ -1603,25 +1483,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         int wmId = LOWORD(wParam);
 
         switch (wmId) {
-        case IDC_REFRESH_BTN:
-            RefreshProcessList(g_hProcessList);
-            break;
-
         case IDC_KILL_BTN:
             KillSelectedProcess();
             break;
 
-        case IDC_AUTOREFRESH_BTN:
-            ToggleAutoRefresh();
-            break;
-
         case IDC_SEARCH_BTN:
-            ApplyFilterToUI();
-            break;
+        {
+            wchar_t filter[256];
+            GetWindowText(g_hFilterEdit, filter, 256);
+            g_appState.filterText = filter;
 
-        case IDM_REFRESH:
-            RefreshProcessList(g_hProcessList);
+            std::lock_guard<std::mutex> lock(g_processDataMutex);
+            g_filteredProcesses = g_processes;
+            if (!g_appState.filterText.empty()) {
+                ApplyFilter(g_filteredProcesses, g_appState.filterText);
+            }
+            g_newDataAvailable = true;
             break;
+        }
 
         case IDM_KILL:
             KillSelectedProcess();
@@ -1641,10 +1520,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case IDM_EXPORT:
             DialogBox(g_hInstance, MAKEINTRESOURCE(IDD_EXPORT_DIALOG), hWnd, ExportDialog);
-            break;
-
-        case IDM_AUTOREFRESH:
-            ToggleAutoRefresh();
             break;
 
         case IDM_COPYPID: {
@@ -1703,9 +1578,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         break;
 
     case WM_DESTROY:
-        if (g_appState.autoRefresh) {
-            KillTimer(hWnd, IDT_AUTOREFRESH_TIMER);
-        }
+        StopRealTimeUpdates();
+        KillTimer(hWnd, 1);
         PostQuitMessage(0);
         break;
 
@@ -1718,4 +1592,264 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 // ExportProcessList
 void ExportProcessList() {
     DialogBox(g_hInstance, MAKEINTRESOURCE(IDD_EXPORT_DIALOG), g_hMainWnd, ExportDialog);
+}
+
+// Функция потока обновления
+void UpdateThreadProc() {
+    while (!g_updateThreadStopRequest.load()) {
+        try {
+            // Получаем новый список процессов
+            auto newProcesses = GetProcessesList();
+
+            // Безопасно обновляем глобальный список
+            {
+                std::lock_guard<std::mutex> lock(g_processDataMutex);
+                g_processes = std::move(newProcesses);
+                g_newDataAvailable = true;
+                g_lastUpdateTick = GetTickCount();
+            }
+
+            // Уведомляем главный поток
+            g_dataReadyCond.notify_one();
+
+        }
+        catch (const std::exception& e) {
+            OutputDebugStringA("Error in update thread: ");
+            OutputDebugStringA(e.what());
+            OutputDebugStringA("\n");
+        }
+
+        // Ожидание с проверкой флага остановки
+        for (int i = 0; i < 100; i++) {  // Упрощенная версия ожидания
+            if (g_updateThreadStopRequest.load()) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    g_updateThreadRunning.store(false);
+}
+
+// Запуск реального обновления
+void StartRealTimeUpdates() {
+    if (g_updateThreadRunning.load()) {
+        return;
+    }
+
+    g_updateThreadStopRequest.store(false);
+    g_updateThreadRunning.store(true);
+
+    try {
+        g_updateThread = std::thread(UpdateThreadProc);
+    }
+    catch (const std::exception& e) {
+        g_updateThreadRunning.store(false);
+        MessageBox(g_hMainWnd,
+            L"Failed to start real-time updates.",
+            L"Warning",
+            MB_OK | MB_ICONWARNING);
+    }
+}
+
+// Остановка реального обновления
+void StopRealTimeUpdates() {
+    if (!g_updateThreadRunning.load()) {
+        return;
+    }
+
+    g_updateThreadStopRequest.store(true);
+    g_dataReadyCond.notify_all();
+
+    if (g_updateThread.joinable()) {
+        try {
+            g_updateThread.join();
+        }
+        catch (...) {
+            g_updateThread.detach();
+        }
+    }
+
+    g_updateThreadRunning.store(false);
+}
+
+// Проверка обновлений данных и обновление UI
+void CheckForDataUpdates() {
+    static DWORD lastUiUpdate = 0;
+    DWORD currentTick = GetTickCount();
+
+    // Проверяем обновления не чаще чем раз в UI_UPDATE_INTERVAL мс
+    if (currentTick - lastUiUpdate < UI_UPDATE_INTERVAL) {
+        return;
+    }
+
+    // Пытаемся захватить мьютекс без блокировки
+    std::unique_lock<std::mutex> lock(g_processDataMutex, std::try_to_lock);
+
+    if (lock.owns_lock() && g_newDataAvailable) {
+        // Применяем фильтры и сортировку
+        g_filteredProcesses = g_processes;
+
+        if (!g_appState.filterText.empty()) {
+            ApplyFilter(g_filteredProcesses, g_appState.filterText);
+        }
+
+        SortProcessList(g_filteredProcesses, g_appState.sortColumn, g_appState.sortAscending);
+
+        // Обновляем интерфейс
+        if (g_hProcessList && IsWindowVisible(g_hProcessList)) {
+            RefreshListViewFromData(g_hProcessList, g_filteredProcesses);
+        }
+
+        // Обновляем статус бар
+        std::wstringstream statusStream;
+        statusStream << L"Processes: " << g_processes.size()
+            << L" (Filtered: " << g_filteredProcesses.size() << L") | Real-time";
+
+        if (g_hStatusBar) {
+            SendMessage(g_hStatusBar, SB_SETTEXT, 0, (LPARAM)statusStream.str().c_str());
+            SendMessage(g_hStatusBar, SB_SETTEXT, 1, (LPARAM)L"Windows Process Monitor v2.0");
+
+            // Обновляем время
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            std::wstringstream timeStream;
+            timeStream << std::setw(2) << std::setfill(L'0') << st.wHour << L":"
+                << std::setw(2) << std::setfill(L'0') << st.wMinute << L":"
+                << std::setw(2) << std::setfill(L'0') << st.wSecond;
+            SendMessage(g_hStatusBar, SB_SETTEXT, 2, (LPARAM)timeStream.str().c_str());
+
+            // Обновляем использование памяти
+            MEMORYSTATUSEX memInfo;
+            memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+            GlobalMemoryStatusEx(&memInfo);
+
+            std::wstringstream memStream;
+            memStream << std::fixed << std::setprecision(1)
+                << L"Memory: "
+                << (float)(memInfo.ullTotalPhys - memInfo.ullAvailPhys) / memInfo.ullTotalPhys * 100.0f
+                << L"% used";
+            SendMessage(g_hStatusBar, SB_SETTEXT, 3, (LPARAM)memStream.str().c_str());
+        }
+
+        g_newDataAvailable = false;
+        lastUiUpdate = currentTick;
+    }
+}
+
+// Более эффективная версия с использованием LVITEM напрямую
+// Функция обновления ListView
+void RefreshListViewFromData(HWND hList, const std::vector<ProcessInfo>& processes) {
+    if (!hList || !IsWindow(hList)) return;
+
+    // Сохраняем выделение
+    int selectedIndex = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
+    DWORD selectedPid = 0;
+    if (selectedIndex != -1) {
+        LVITEM lvi = { 0 };
+        lvi.iItem = selectedIndex;
+        lvi.mask = LVIF_PARAM;
+        if (ListView_GetItem(hList, &lvi)) {
+            selectedPid = (DWORD)lvi.lParam;
+        }
+    }
+
+    // Отключаем перерисовку
+    SendMessage(hList, WM_SETREDRAW, FALSE, 0);
+
+    // Очищаем список
+    int oldItemCount = ListView_GetItemCount(hList);
+    int newItemCount = static_cast<int>(processes.size());
+
+    // Обновляем существующие строки или добавляем новые
+    for (int i = 0; i < newItemCount; i++) {
+        const ProcessInfo& proc = processes[i];
+
+        // Подготавливаем данные для колонок
+        std::wstring pidStr = std::to_wstring(proc.pid);
+
+        // Форматируем память с одним знаком после запятой
+        std::wstringstream memoryStream;
+        memoryStream << std::fixed << std::setprecision(1)
+            << (proc.workingSetSize / (1024.0 * 1024.0));
+        std::wstring memoryStr = memoryStream.str();
+
+        std::wstring threadsStr = std::to_wstring(proc.threadCount);
+
+        std::wstringstream cpuStream;
+        cpuStream << std::fixed << std::setprecision(1) << proc.cpuUsage;
+        std::wstring cpuStr = cpuStream.str();
+
+        if (i < oldItemCount) {
+            // Обновляем существующую строку
+            LVITEM lvi = { 0 };
+            lvi.mask = LVIF_TEXT | LVIF_PARAM;
+            lvi.iItem = i;
+            lvi.lParam = proc.pid;
+
+            // Обновляем PID
+            lvi.iSubItem = 0;
+            lvi.pszText = const_cast<wchar_t*>(pidStr.c_str());
+            ListView_SetItem(hList, &lvi);
+
+            // Обновляем остальные колонки
+            ListView_SetItemText(hList, i, 1, const_cast<wchar_t*>(proc.name.c_str()));
+            ListView_SetItemText(hList, i, 2, const_cast<wchar_t*>(proc.userName.c_str()));
+            ListView_SetItemText(hList, i, 3, const_cast<wchar_t*>(memoryStr.c_str()));
+            ListView_SetItemText(hList, i, 4, const_cast<wchar_t*>(threadsStr.c_str()));
+            ListView_SetItemText(hList, i, 5, const_cast<wchar_t*>(cpuStr.c_str()));
+            ListView_SetItemText(hList, i, 6, const_cast<wchar_t*>(proc.fullPath.c_str()));
+        }
+        else {
+            // Добавляем новую строку
+            LVITEM lvi = { 0 };
+            lvi.mask = LVIF_TEXT | LVIF_PARAM;
+            lvi.iItem = i;
+            lvi.iSubItem = 0;
+            lvi.pszText = const_cast<wchar_t*>(pidStr.c_str());
+            lvi.lParam = proc.pid;
+
+            int itemIndex = ListView_InsertItem(hList, &lvi);
+            if (itemIndex != -1) {
+                ListView_SetItemText(hList, itemIndex, 1, const_cast<wchar_t*>(proc.name.c_str()));
+                ListView_SetItemText(hList, itemIndex, 2, const_cast<wchar_t*>(proc.userName.c_str()));
+                ListView_SetItemText(hList, itemIndex, 3, const_cast<wchar_t*>(memoryStr.c_str()));
+                ListView_SetItemText(hList, itemIndex, 4, const_cast<wchar_t*>(threadsStr.c_str()));
+                ListView_SetItemText(hList, itemIndex, 5, const_cast<wchar_t*>(cpuStr.c_str()));
+                ListView_SetItemText(hList, itemIndex, 6, const_cast<wchar_t*>(proc.fullPath.c_str()));
+            }
+        }
+    }
+
+    // Удаляем лишние строки
+    if (newItemCount < oldItemCount) {
+        for (int i = oldItemCount - 1; i >= newItemCount; i--) {
+            ListView_DeleteItem(hList, i);
+        }
+    }
+
+    // Восстанавливаем выделение
+    if (selectedPid != 0) {
+        for (int i = 0; i < newItemCount; i++) {
+            LVITEM lvi = { 0 };
+            lvi.iItem = i;
+            lvi.mask = LVIF_PARAM;
+            if (ListView_GetItem(hList, &lvi) && (DWORD)lvi.lParam == selectedPid) {
+                ListView_SetItemState(hList, i, LVIS_SELECTED | LVIS_FOCUSED,
+                    LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(hList, i, FALSE);
+                break;
+            }
+        }
+    }
+
+    // Автоматический размер столбцов
+    for (int i = 0; i < 7; i++) {
+        ListView_SetColumnWidth(hList, i, LVSCW_AUTOSIZE_USEHEADER);
+    }
+
+    // Включаем перерисовку
+    SendMessage(hList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(hList, NULL, TRUE);
+    UpdateWindow(hList);
 }
