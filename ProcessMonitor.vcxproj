@@ -70,6 +70,12 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <GenerateManifest>false</GenerateManifest>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <GenerateManifest>false</GenerateManifest>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -80,6 +86,9 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;psapi.lib;advapi32.lib;kernel32.lib;shell32.lib;comdlg32.lib;ntdll.lib</AdditionalDependencies>
+      <AdditionalManifestDependencies>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</AdditionalManifestDependencies>
+      <ManifestFile>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</ManifestFile>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -106,9 +115,11 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>comctl32.lib;psapi.lib;user32.lib;gdi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>user32.lib;gdi32.lib;comctl32.lib;psapi.lib;advapi32.lib;kernel32.lib;shell32.lib;comdlg32.lib;ntdll.lib</AdditionalDependencies>
       <EntryPointSymbol>
       </EntryPointSymbol>
+      <AdditionalManifestDependencies>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</AdditionalManifestDependencies>
+      <ManifestFile>$(IntDir)$(TargetName)$(TargetExt).intermediate.manifest;ProcessMonitor.manifest</ManifestFile>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

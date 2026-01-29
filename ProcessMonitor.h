@@ -20,9 +20,8 @@
 #include <algorithm>
 #include <cwctype>
 
-#include <winternl.h>  // Для NT_SUCCESS и NTSTATUS
+#include <winternl.h>
 #pragma comment(lib, "ntdll.lib")
-
 
 // Constants for windows
 #define IDC_PROCESS_LIST 1001
@@ -30,33 +29,22 @@
 #define IDC_TAB_CONTROL 1003
 #define IDC_REFRESH_BTN 1004
 #define IDC_KILL_BTN 1005
-#define IDM_PROCESS_MENU 2000
+#define IDC_AUTOREFRESH_BTN 1006
+#define IDC_FILTER_EDIT 1007
+#define IDC_SEARCH_BTN 1008
+#define IDC_SORT_COMBO 1009
+#define IDT_AUTOREFRESH_TIMER 1010
 
-// Constants for context menu
-#define IDM_REFRESH     2100
-#define IDM_KILL        2101
-#define IDM_KILL_TREE   2102
-#define IDM_PROPERTIES  2103
-#define IDM_MODULES     2104
-#define IDM_EXPORT      2105
+// Constants for context menu - используем уже определенные в resource.h
+// Они уже определены выше как 2100-2109
 
-//Const for dialog propert
-#define IDD_PROPERTIES_DIALOG  3000
-#define IDC_PROP_NAME          3001
-#define IDC_PROP_PID           3002
-#define IDC_PROP_PARENT_PID    3003
-#define IDC_PROP_PATH          3004
-#define IDC_PROP_CMD_LINE      3005
-#define IDC_PROP_USER          3006
-#define IDC_PROP_PRIORITY      3007
-#define IDC_PROP_THREADS       3008
-#define IDC_PROP_MEMORY        3009
-#define IDC_PROP_CPU_USAGE     3010
-#define IDC_PROP_START_TIME    3011
-#define IDC_PROP_SESSION_ID    3012
-#define IDC_PROP_INTEGRITY     3013
-#define IDC_CLOSE_BTN          3014
-
+// Структура для истории CPU
+struct CPUHistory {
+    ULONGLONG lastKernel = 0;
+    ULONGLONG lastUser = 0;
+    ULONGLONG lastSys = 0;
+    FILETIME lastUpdate = { 0, 0 };
+};
 
 // Structure for the process
 struct ProcessInfo {
@@ -68,32 +56,45 @@ struct ProcessInfo {
     std::wstring commandLine;
     std::wstring integrityLvl;
     DWORD threadCount;
-    SIZE_T workingSetSize;
-    SIZE_T privateBytes;
-    SIZE_T virtualSize;
+    ULONGLONG workingSetSize;
+    ULONGLONG privateBytes;
+    ULONGLONG virtualSize;
     DWORD priority;
     DWORD sessionId;
     FILETIME createTime;
     FILETIME kernelTime;
     FILETIME userTime;
     double cpuUsage;
-
 };
 
-//Dialog producer
-INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+// App state structure
+struct AppState {
+    BOOL autoRefresh;
+    UINT refreshInterval;
+    std::wstring filterText;
+    int sortColumn;
+    BOOL sortAscending;
+    std::map<DWORD, CPUHistory> cpuPrevTimes;
+};
 
-//New func
+// Dialog producers
+INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK ExportDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+
+// Functions
 ProcessInfo GetDetailedProcessInfo(DWORD pid);
 std::wstring GetProcessCommandLine(DWORD pid);
 std::wstring GetProcessIntegrityLevel(DWORD pid);
 std::wstring FormatFileTime(FILETIME ft);
-std::wstring FormatMemorySize(SIZE_T bytes);
-double CalculateCPUUsage(DWORD pid, FILETIME* prevKernel, FILETIME* prevUser);
+std::wstring FormatMemorySize(ULONGLONG bytes);
+double CalculateCPUUsage(DWORD pid);
+BOOL ExportToCSV(const std::wstring& filename, const std::vector<ProcessInfo>& processes);
+BOOL ExportToTXT(const std::wstring& filename, const std::vector<ProcessInfo>& processes);
+void CopyToClipboard(const std::wstring& text);
+void SortProcessList(std::vector<ProcessInfo>& processes, int column, BOOL ascending);
+void ApplyFilter(std::vector<ProcessInfo>& processes, const std::wstring& filter);
+void ApplyFilterToUI();
 
-
-
-// Func
 BOOL InitApplication(HINSTANCE hInstance);
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow);
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -104,7 +105,6 @@ std::vector<ProcessInfo> GetProcessesList();
 std::wstring GetProcessUserName(DWORD pid);
 void RefreshProcessList(HWND hList);
 void ShowProcessModules(HWND hList, DWORD pid);
-void DisplayProcessDetails(DWORD pid);
 void KillSelectedProcess();
 void UpdateStatusBar(const wchar_t* text);
 void ShowContextMenu(HWND hWnd, int x, int y);
@@ -112,6 +112,6 @@ void ShowProcessProperties(HWND hParent);
 void ShowSelectedProcessModules();
 void ExportProcessList();
 void KillProcessTree();
-int KillProcessTreeRecursive(DWORD parentPid, int depth);
-void ShowContextMenu(HWND hWnd, int x, int y);
-ProcessInfo GetDetailedProcessInfo(DWORD pid);
+int KillProcessTreeRecursive(DWORD parentPid, BOOL killParent);
+void ToggleAutoRefresh();
+void UpdateSorting();
