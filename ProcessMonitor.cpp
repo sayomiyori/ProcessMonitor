@@ -1,5 +1,5 @@
 ﻿#define WIN32_LEAN_AND_MEAN
-#define _WIN32_WINNT 0x0600
+#define _WIN32_WINNT 0x0601
 #include <windows.h>
 #include <commctrl.h>
 #include <psapi.h>
@@ -10,11 +10,22 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
-#include <iomanip>  // Добавлено
+#include <iomanip>
 #include <thread>
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <stdio.h>
+#include <io.h>
+#include <fcntl.h>
+#include <vector>
+#include <map>
+#include <string>
+#include <algorithm>
+#include "ProcessMonitor.h"
+#include "Resource.h"
+
+#define UI_UPDATE_INTERVAL 1000
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -26,16 +37,6 @@
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "Dbghelp.lib")
 
-#include <stdio.h>
-#include <io.h>
-#include <fcntl.h>
-#include <vector>
-#include <map>
-#include <string>
-#include <algorithm>
-#include "ProcessMonitor.h"
-#include "Resource.h"
-
 // Global variables
 HWND g_hMainWnd = NULL;
 HWND g_hProcessList = NULL;
@@ -43,7 +44,7 @@ HWND g_hModuleList = NULL;
 HWND g_hTabControl = NULL;
 HWND g_hStatusBar = NULL;
 HWND g_hFilterEdit = NULL;
-HWND g_hPerformanceWnd = NULL;  // Добавлено
+HWND g_hPerformanceWnd = NULL;
 HINSTANCE g_hInstance;
 AppState g_appState;
 std::vector<ProcessInfo> g_processes;
@@ -51,6 +52,8 @@ std::vector<ProcessInfo> g_filteredProcesses;
 std::map<DWORD, CPUHistory> g_cpuHistory;
 HWND g_hMenuBar = NULL;
 std::map<DWORD, DWORD_PTR> g_processAffinity;
+bool g_isProcessTreeExpanded = false;
+bool g_efficiencyModeEnabled = false;
 
 // Многопоточные переменные
 std::thread g_updateThread;
@@ -70,7 +73,7 @@ DWORD g_lastUpdateTick = 0;
 #define MIN_WINDOW_HEIGHT 600
 
 
-// Прототипы функций, которые были объявлены, но не определены
+// Прототипы функций
 void RefreshProcessList();
 void UpdateStatusBar(const wchar_t* text);
 void ShowProcessModules(HWND hList, DWORD pid);
@@ -78,6 +81,39 @@ void RefreshListViewFromData(HWND hList, const std::vector<ProcessInfo>& process
 void StartRealTimeUpdates();
 void StopRealTimeUpdates();
 void CheckForDataUpdates();
+void ShowProcessProperties(HWND hParent);
+void KillSelectedProcess();
+INT_PTR CALLBACK ExportDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+void ExportProcessList();
+void ToggleExpandCollapse();
+void SetEfficiencyMode();
+void DebugProcess();
+void ShowDetailedInfo();
+void RestartProcess();
+void SuspendProcess();
+void ResumeProcess();
+void AnalyzeWaitChain();
+void SetResourceDisplayMode(int mode);
+void ToggleAlwaysOnTop();
+void ToggleAutoRefresh();
+void ToggleShowAllUsers();
+void OpenFileLocation();
+void SearchOnline();
+BOOL CreateMiniDump(DWORD pid, const wchar_t* filePath);
+void SetProcessPriority(DWORD priorityClass);
+void SetProcessAffinity();
+void RunNewTask();
+void GoToServices();
+void ShowAboutDialog();
+INT_PTR CALLBACK RunTaskDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK AffinityDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK AboutDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK DebugDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK DetailedInfoDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+void KillProcessTree();
+void UpdateThreadProc();
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 BOOL IsRunAsAdministrator() {
     BOOL fIsRunAsAdmin = FALSE;
@@ -89,7 +125,6 @@ BOOL IsRunAsAdministrator() {
         DOMAIN_ALIAS_RID_ADMINS,
         0, 0, 0, 0, 0, 0,
         &pAdministratorsGroup)) {
-
         if (!CheckTokenMembership(NULL, pAdministratorsGroup, &fIsRunAsAdmin)) {
             fIsRunAsAdmin = FALSE;
         }
@@ -98,13 +133,12 @@ BOOL IsRunAsAdministrator() {
     return fIsRunAsAdmin;
 }
 
+
 // Entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Checking administrator rights
     if (!IsRunAsAdministrator()) {
         wchar_t szPath[MAX_PATH];
         if (GetModuleFileName(NULL, szPath, ARRAYSIZE(szPath))) {
-            // Restarting with administrator rights
             SHELLEXECUTEINFO sei = { sizeof(sei) };
             sei.lpVerb = L"runas";
             sei.lpFile = szPath;
@@ -135,7 +169,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return FALSE;
     }
 
-    // Main message loop
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
@@ -144,6 +177,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return (int)msg.wParam;
 }
+
 
 // Window Class Registration
 BOOL InitApplication(HINSTANCE hInstance) {
@@ -157,7 +191,7 @@ BOOL InitApplication(HINSTANCE hInstance) {
     wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wcex.lpszMenuName = MAKEINTRESOURCE(IDR_MAIN_MENU); // Используем меню
+    wcex.lpszMenuName = MAKEINTRESOURCE(IDR_MAIN_MENU);
     wcex.lpszClassName = L"ProcessMonitorClass";
     wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON_SMALL));
 
@@ -178,10 +212,6 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
     if (!g_hMainWnd) {
         return FALSE;
     }
-
-    // Меню уже загружено через класс окна, так что убираем эту строку:
-    // g_hMenuBar = LoadMenu(hInstance, MAKEINTRESOURCE(IDR_MAIN_MENU));
-    // SetMenu(g_hMainWnd, g_hMenuBar);
 
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
@@ -276,48 +306,6 @@ void CreateDumpFile() {
 
     CreateMiniDump(pid, szFile);
 }
-
-// Функция создания мини-дампа
-/*void CreateMiniDump(DWORD pid, const std::wstring& filePath) {
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (!hProcess) {
-        MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
-        return;
-    }
-
-    HANDLE hFile = CreateFile(filePath.c_str(), GENERIC_WRITE, 0, NULL,
-        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-    if (hFile == INVALID_HANDLE_VALUE) {
-        CloseHandle(hProcess);
-        MessageBox(g_hMainWnd, L"Cannot create dump file", L"Error", MB_ICONERROR);
-        return;
-    }
-
-    // Создаем мини-дамп
-    MINIDUMP_EXCEPTION_INFORMATION mdei;
-    mdei.ThreadId = GetCurrentThreadId();
-    mdei.ExceptionPointers = NULL;
-    mdei.ClientPointers = FALSE;
-
-    MINIDUMP_TYPE mdt = (MINIDUMP_TYPE)(MiniDumpWithFullMemory |
-        MiniDumpWithHandleData |
-        MiniDumpWithUnloadedModules);
-
-    BOOL success = MiniDumpWriteDump(hProcess, pid, hFile, mdt,
-        NULL, NULL, NULL);
-
-    CloseHandle(hFile);
-    CloseHandle(hProcess);
-
-    if (success) {
-        MessageBox(g_hMainWnd, L"Dump file created successfully", L"Success", MB_ICONINFORMATION);
-    }
-    else {
-        MessageBox(g_hMainWnd, L"Failed to create dump file", L"Error", MB_ICONERROR);
-    }
-}
-*/
 
 // Новая функция: Перейти к службам
 void GoToServices() {
@@ -1043,17 +1031,19 @@ void ApplyFilter(std::vector<ProcessInfo>& processes, const std::wstring& filter
     processes.erase(it, processes.end());
 }
 
-// GetDetailedProcessInfo
+// GetDetailedProcessInfo - УДАЛЕНО ДУБЛИРОВАНИЕ ОБЪЯВЛЕНИЯ pmc
 ProcessInfo GetDetailedProcessInfo(DWORD pid) {
     ProcessInfo info = {};
     info.pid = pid;
 
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ |
+        PROCESS_VM_OPERATION, FALSE, pid);
     if (!hProcess) {
         hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     }
 
-    if (hProcess) {
+    if (hProcess)
+    {
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (snapshot != INVALID_HANDLE_VALUE) {
             PROCESSENTRY32W pe;
@@ -1095,12 +1085,20 @@ ProcessInfo GetDetailedProcessInfo(DWORD pid) {
         ProcessIdToSessionId(pid, &info.sessionId);
         GetProcessTimes(hProcess, &info.createTime, NULL, &info.kernelTime, &info.userTime);
 
+        // ТОЛЬКО ОДНО ОБЪЯВЛЕНИЕ pmc
         PROCESS_MEMORY_COUNTERS_EX pmc;
         if (GetProcessMemoryInfo(hProcess, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
             info.workingSetSize = pmc.WorkingSetSize;
             info.privateBytes = pmc.PrivateUsage;
             info.virtualSize = pmc.PagefileUsage;
+            info.peakWorkingSetSize = pmc.PeakWorkingSetSize;
+            info.peakPagefileUsage = pmc.PeakPagefileUsage;
         }
+
+        GetProcessHandleCount(hProcess, &info.handleCount);
+
+        info.gdiObjects = GetGuiResources(hProcess, GR_GDIOBJECTS);
+        info.userObjects = GetGuiResources(hProcess, GR_GDIOBJECTS);
 
         info.cpuUsage = CalculateCPUUsage(pid);
         CloseHandle(hProcess);
@@ -1621,6 +1619,11 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
         AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"End Process Tree");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
+        // Развернуть/Свернуть
+        AppendMenu(hMenu, MF_STRING, IDM_EXPAND_COLLAPSE,
+            g_isProcessTreeExpanded ? L"Collapse" : L"Expand");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
         // Подменю Priority
         HMENU hPriorityMenu = CreatePopupMenu();
         AppendMenu(hPriorityMenu, MF_STRING, IDM_PRIORITY_REALTIME, L"Realtime");
@@ -1634,11 +1637,50 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
         AppendMenu(hMenu, MF_STRING, IDM_AFFINITY, L"Set Affinity...");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
+        // Режим эффективности
+        AppendMenu(hMenu, MF_STRING, IDM_EFFICIENCY_MODE,
+            g_efficiencyModeEnabled ? L"Disable Efficiency Mode" : L"Enable Efficiency Mode");
+
+        // Подменю Значения ресурсов
+        HMENU hResourceMenu = CreatePopupMenu();
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_MEMORY_PERCENT,
+            g_appState.resourceDisplay.memoryAsPercent ? L"✓ Memory (Percentages)" : L"Memory (Percentages)");
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_MEMORY_VALUES,
+            !g_appState.resourceDisplay.memoryAsPercent ? L"✓ Memory (Values)" : L"Memory (Values)");
+        AppendMenu(hResourceMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_DISK_PERCENT,
+            g_appState.resourceDisplay.diskAsPercent ? L"✓ Disk (Percentages)" : L"Disk (Percentages)");
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_DISK_VALUES,
+            !g_appState.resourceDisplay.diskAsPercent ? L"✓ Disk (Values)" : L"Disk (Values)");
+        AppendMenu(hResourceMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_NETWORK_PERCENT,
+            g_appState.resourceDisplay.networkAsPercent ? L"✓ Network (Percentages)" : L"Network (Percentages)");
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_NETWORK_VALUES,
+            !g_appState.resourceDisplay.networkAsPercent ? L"✓ Network (Values)" : L"Network (Values)");
+        AppendMenu(hResourceMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_ALL_PERCENT, L"All (Percentages)");
+        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_ALL_VALUES, L"All (Values)");
+        AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hResourceMenu, L"Resource Values");
+
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
         // Анализ и диагностика
-        AppendMenu(hMenu, MF_STRING, IDM_CREATEDUMP, L"Create Dump File");
+        AppendMenu(hMenu, MF_STRING, IDM_DEBUG_PROCESS, L"Debug");
+        AppendMenu(hMenu, MF_STRING, IDM_ANALYZE_WAIT_CHAIN, L"Analyze Wait Chain");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // Создание дампа
+        AppendMenu(hMenu, MF_STRING, IDM_CREATEDUMP, L"Create Memory Dump File");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // Управление процессом
+        AppendMenu(hMenu, MF_STRING, IDM_SUSPEND, L"Suspend Process");
+        AppendMenu(hMenu, MF_STRING, IDM_RESUME, L"Resume Process");
+        AppendMenu(hMenu, MF_STRING, IDM_RESTART, L"Restart Process");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
         // Информация
+        AppendMenu(hMenu, MF_STRING, IDM_DETAILED_INFO, L"Detailed Information");
         AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Properties");
         AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show Modules (DLL)");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
@@ -1660,10 +1702,6 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
     AppendMenu(hMenu, MF_STRING, IDM_CREATENEWTASK, L"Run New Task...");
     AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Export List...");
 
-    // Установка шрифта и стилей
-    NONCLIENTMETRICS ncm = { sizeof(NONCLIENTMETRICS) };
-    SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0);
-
     SetForegroundWindow(hWnd);
 
     // Показываем меню
@@ -1677,6 +1715,591 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
 
     DestroyMenu(hMenu);
 }
+
+void ToggleExpandCollapse() {
+    g_isProcessTreeExpanded = !g_isProcessTreeExpanded;
+
+    if (g_isProcessTreeExpanded) {
+        UpdateStatusBar(L"Process tree expanded");
+        // Здесь можно добавить логику для отображения дерева процессов
+    }
+    else {
+        UpdateStatusBar(L"Process tree collapsed");
+    }
+}
+
+void SetEfficiencyMode() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
+    if (hProcess) {
+        BOOL success = FALSE;
+        if (g_efficiencyModeEnabled) {
+            // Восстанавливаем нормальный приоритет
+            success = SetPriorityClass(hProcess, NORMAL_PRIORITY_CLASS);
+            if (success) {
+                g_efficiencyModeEnabled = false;
+                UpdateStatusBar(L"Efficiency mode disabled (normal priority restored)");
+            }
+        }
+        else {
+            // Устанавливаем низкий приоритет для экономии ресурсов
+            success = SetPriorityClass(hProcess, BELOW_NORMAL_PRIORITY_CLASS);
+            if (success) {
+                g_efficiencyModeEnabled = true;
+                UpdateStatusBar(L"Efficiency mode enabled (below normal priority)");
+            }
+        }
+        CloseHandle(hProcess);
+
+        if (success) {
+            g_efficiencyModeEnabled = !g_efficiencyModeEnabled;
+
+            std::wstring message = g_efficiencyModeEnabled ?
+                L"Efficiency mode enabled for process" :
+                L"Efficiency mode disabled for process";
+            UpdateStatusBar(message.c_str());
+        }
+        else {
+            DWORD error = GetLastError();
+
+            if (error == ERROR_PROC_NOT_FOUND || error == ERROR_INVALID_PARAMETER) {
+                // Функция не поддерживается в этой версии Windows
+                MessageBox(g_hMainWnd,
+                    L"Efficiency mode is not supported on this version of Windows.\n"
+                    L"Requires Windows 10 version 1709 or later.",
+                    L"Feature Not Available",
+                    MB_ICONINFORMATION | MB_OK);
+            }
+            else {
+                MessageBox(g_hMainWnd, L"Failed to set efficiency mode", L"Error", MB_ICONERROR);
+            }
+        }
+    }
+    else {
+        MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+    }
+}
+
+BOOL SetProcessPowerThrottling(HANDLE hProcess, BOOL enable) {
+    // Динамическая загрузка функции для совместимости
+    typedef BOOL(WINAPI* PFN_SetProcessInformation)(
+        HANDLE,
+        PROCESS_INFORMATION_CLASS,
+        PVOID,
+        DWORD);
+
+    static PFN_SetProcessInformation pfnSetProcessInformation = NULL;
+    static BOOL initialized = FALSE;
+
+    if (!initialized) {
+        HMODULE hKernel32 = GetModuleHandle(L"kernel32.dll");
+        if (hKernel32) {
+            pfnSetProcessInformation = (PFN_SetProcessInformation)
+                GetProcAddress(hKernel32, "SetProcessInformation");
+        }
+        initialized = TRUE;
+    }
+
+    if (!pfnSetProcessInformation) {
+        // Функция недоступна в этой версии Windows
+        return FALSE;
+    }
+
+    PROCESS_POWER_THROTTLING_STATE powerThrottling;
+    ZeroMemory(&powerThrottling, sizeof(powerThrottling));
+    powerThrottling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+
+    if (enable) {
+        powerThrottling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+        powerThrottling.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    }
+    else {
+        powerThrottling.ControlMask = 0;
+        powerThrottling.StateMask = 0;
+    }
+
+    return pfnSetProcessInformation(hProcess, ProcessPowerThrottling,
+        &powerThrottling, sizeof(powerThrottling));
+}
+
+
+// Функция для отладки процесса
+void DebugProcess() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Открываем диалог отладки
+    DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_DEBUG_DIALOG),
+        g_hMainWnd, DebugDialog, (LPARAM)pid);
+}
+
+// Диалог отладки
+INT_PTR CALLBACK DebugDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    static DWORD processPid = 0;
+    static std::wstring processName;
+
+    switch (message) {
+    case WM_INITDIALOG: {
+        processPid = (DWORD)lParam;
+
+        // Получаем имя процесса
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, processPid);
+        if (hProcess) {
+            wchar_t name[MAX_PATH];
+            if (GetModuleFileNameEx(hProcess, NULL, name, MAX_PATH)) {
+                processName = name;
+                // Извлекаем только имя файла
+                size_t pos = processName.find_last_of(L'\\');
+                if (pos != std::wstring::npos) {
+                    processName = processName.substr(pos + 1);
+                }
+            }
+            else {
+                processName = L"Unknown";
+            }
+            CloseHandle(hProcess);
+        }
+
+        SetDlgItemText(hDlg, IDC_DEBUG_PROC_NAME, processName.c_str());
+        SetDlgItemInt(hDlg, IDC_DEBUG_PID, processPid, FALSE);
+
+        return TRUE;
+    }
+
+    case WM_COMMAND: {
+        switch (LOWORD(wParam)) {
+        case IDC_DEBUG_ATTACH: {
+            // Прикрепление отладчика
+            if (MessageBox(hDlg,
+                L"Attaching a debugger may cause the process to pause.\nContinue?",
+                L"Debugger Attach", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+
+                HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processPid);
+                if (hProcess) {
+                    if (DebugActiveProcess(processPid)) {
+                        MessageBox(hDlg, L"Debugger attached successfully",
+                            L"Success", MB_ICONINFORMATION);
+                    }
+                    else {
+                        MessageBox(hDlg, L"Failed to attach debugger",
+                            L"Error", MB_ICONERROR);
+                    }
+                    CloseHandle(hProcess);
+                }
+                else {
+                    MessageBox(hDlg, L"Cannot open process",
+                        L"Error", MB_ICONERROR);
+                }
+            }
+            return TRUE;
+        }
+
+        case IDC_DEBUG_DETACH: {
+            // Отсоединение отладчика
+            if (DebugActiveProcessStop(processPid)) {
+                MessageBox(hDlg, L"Debugger detached successfully",
+                    L"Success", MB_ICONINFORMATION);
+            }
+            else {
+                MessageBox(hDlg, L"Failed to detach debugger",
+                    L"Error", MB_ICONERROR);
+            }
+            return TRUE;
+        }
+
+        case IDC_DEBUG_BREAK: {
+            // Прерывание процесса
+            HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processPid);
+            if (hProcess) {
+                if (DebugBreakProcess(hProcess)) {
+                    MessageBox(hDlg, L"Process break successful",
+                        L"Success", MB_ICONINFORMATION);
+                }
+                else {
+                    MessageBox(hDlg, L"Failed to break process",
+                        L"Error", MB_ICONERROR);
+                }
+                CloseHandle(hProcess);
+            }
+            else {
+                MessageBox(hDlg, L"Cannot open process",
+                    L"Error", MB_ICONERROR);
+            }
+            return TRUE;
+        }
+
+        case IDC_DEBUG_CONTINUE: {
+            // Продолжение процесса после прерывания
+            MessageBox(hDlg,
+                L"Continue functionality requires a debugger event loop.\n"
+                L"This feature is limited in this implementation.",
+                L"Information", MB_ICONINFORMATION);
+            return TRUE;
+        }
+
+        case IDOK:
+        case IDCANCEL:
+            EndDialog(hDlg, LOWORD(wParam));
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        EndDialog(hDlg, 0);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+// Функция для показа детальной информации
+void ShowDetailedInfo() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (ListView_GetItem(g_hProcessList, &lvi)) {
+        DWORD pid = (DWORD)lvi.lParam;
+        DialogBoxParam(g_hInstance,
+            MAKEINTRESOURCE(IDD_DETAILED_INFO_DIALOG),
+            g_hMainWnd, DetailedInfoDialog, (LPARAM)pid);
+    }
+}
+
+// Диалог детальной информации
+INT_PTR CALLBACK DetailedInfoDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    static DWORD processPid = 0;
+    static ProcessInfo procInfo;
+
+    switch (message) {
+    case WM_INITDIALOG: {
+        processPid = (DWORD)lParam;
+
+        procInfo = GetDetailedProcessInfo(processPid);
+
+        if (procInfo.pid == 0) {
+            MessageBox(hDlg, L"Couldn't get detailed information about the process",
+                L"Error", MB_OK | MB_ICONERROR);
+            EndDialog(hDlg, 0);
+            return TRUE;
+        }
+
+        SetDlgItemText(hDlg, IDC_PROP_NAME, procInfo.name.c_str());
+        SetDlgItemInt(hDlg, IDC_PROP_PID, procInfo.pid, FALSE);
+        SetDlgItemInt(hDlg, IDC_PROP_PARENT_PID, procInfo.parentPid, FALSE);
+        SetDlgItemText(hDlg, IDC_PROP_PATH, procInfo.fullPath.c_str());
+        SetDlgItemText(hDlg, IDC_PROP_CMD_LINE, procInfo.commandLine.c_str());
+        SetDlgItemText(hDlg, IDC_PROP_USER, procInfo.userName.c_str());
+
+        // Приоритет
+        std::wstring priorityStr;
+        switch (procInfo.priority) {
+        case REALTIME_PRIORITY_CLASS: priorityStr = L"Realtime"; break;
+        case HIGH_PRIORITY_CLASS: priorityStr = L"High"; break;
+        case ABOVE_NORMAL_PRIORITY_CLASS: priorityStr = L"Above Normal"; break;
+        case NORMAL_PRIORITY_CLASS: priorityStr = L"Normal"; break;
+        case BELOW_NORMAL_PRIORITY_CLASS: priorityStr = L"Below Normal"; break;
+        case IDLE_PRIORITY_CLASS: priorityStr = L"Idle"; break;
+        default: priorityStr = L"Unknown"; break;
+        }
+        SetDlgItemText(hDlg, IDC_PROP_PRIORITY, priorityStr.c_str());
+
+        SetDlgItemInt(hDlg, IDC_PROP_THREADS, procInfo.threadCount, FALSE);
+
+        // Память с детальной информацией
+        std::wstringstream memoryStream;
+        memoryStream << L"Working Set: " << FormatMemorySize(procInfo.workingSetSize)
+            << L"\nPrivate Bytes: " << FormatMemorySize(procInfo.privateBytes)
+            << L"\nVirtual Size: " << FormatMemorySize(procInfo.virtualSize)
+            << L"\nPeak Working Set: " << FormatMemorySize(procInfo.workingSetSize) // Здесь можно добавить реальные данные
+            << L"\nPeak Pagefile Usage: " << FormatMemorySize(procInfo.virtualSize);
+        SetDlgItemText(hDlg, IDC_PROP_MEMORY, memoryStream.str().c_str());
+
+        // CPU Usage
+        std::wstringstream cpuStream;
+        cpuStream << std::fixed << std::setprecision(2) << procInfo.cpuUsage << L"%";
+        SetDlgItemText(hDlg, IDC_PROP_CPU_USAGE, cpuStream.str().c_str());
+
+        SetDlgItemText(hDlg, IDC_PROP_START_TIME, FormatFileTime(procInfo.createTime).c_str());
+        SetDlgItemInt(hDlg, IDC_PROP_SESSION_ID, procInfo.sessionId, FALSE);
+        SetDlgItemText(hDlg, IDC_PROP_INTEGRITY, procInfo.integrityLvl.c_str());
+
+        // Дополнительная информация (заглушки)
+        SetDlgItemInt(hDlg, IDC_PROP_HANDLES, 0, FALSE); // Можно добавить реальное количество хендлов
+        SetDlgItemInt(hDlg, IDC_PROP_GDI_OBJECTS, 0, FALSE);
+        SetDlgItemInt(hDlg, IDC_PROP_USER_OBJECTS, 0, FALSE);
+        SetDlgItemText(hDlg, IDC_PROP_IO_COUNTERS, L"N/A");
+        SetDlgItemText(hDlg, IDC_PROP_WINDOW_TITLE, L"N/A");
+        SetDlgItemText(hDlg, IDC_PROP_DEP_STATUS, L"N/A");
+        SetDlgItemText(hDlg, IDC_PROP_ASLR_STATUS, L"N/A");
+        SetDlgItemText(hDlg, IDC_PROP_ENVIRONMENT, L"N/A");
+
+        // Заголовок окна
+        std::wstring title = L"Detailed Information: " + procInfo.name +
+            L" (PID: " + std::to_wstring(procInfo.pid) + L")";
+        SetWindowText(hDlg, title.c_str());
+
+        return TRUE;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDC_CLOSE_BTN || LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, 0);
+            return TRUE;
+        }
+        break;
+
+    case WM_CLOSE:
+        EndDialog(hDlg, 0);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+// Функция для перезапуска процесса
+void RestartProcess() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Получаем путь к исполняемому файлу
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hProcess) {
+        MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+        return;
+    }
+
+    wchar_t path[MAX_PATH];
+    if (GetModuleFileNameEx(hProcess, NULL, path, MAX_PATH)) {
+        CloseHandle(hProcess);
+
+        // Завершаем процесс
+        KillSelectedProcess();
+
+        // Запускаем заново
+        SHELLEXECUTEINFO sei = { sizeof(sei) };
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        sei.lpFile = path;
+        sei.nShow = SW_SHOW;
+
+        if (ShellExecuteEx(&sei)) {
+            UpdateStatusBar(L"Process restarted");
+        }
+        else {
+            MessageBox(g_hMainWnd, L"Failed to restart process", L"Error", MB_ICONERROR);
+        }
+    }
+    else {
+        CloseHandle(hProcess);
+        MessageBox(g_hMainWnd, L"Cannot get process path", L"Error", MB_ICONERROR);
+    }
+}
+
+// Функция для приостановки процесса
+void SuspendProcess() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Используем NtSuspendProcess для приостановки
+    HMODULE hNtdll = GetModuleHandle(L"ntdll.dll");
+    if (hNtdll) {
+        typedef NTSTATUS(NTAPI* pNtSuspendProcess)(HANDLE);
+        pNtSuspendProcess NtSuspendProcess = (pNtSuspendProcess)GetProcAddress(hNtdll, "NtSuspendProcess");
+
+        if (NtSuspendProcess) {
+            HANDLE hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, pid);
+            if (hProcess) {
+                NTSTATUS status = NtSuspendProcess(hProcess);
+                CloseHandle(hProcess);
+
+                if (NT_SUCCESS(status)) {
+                    UpdateStatusBar(L"Process suspended");
+                    RefreshProcessList();
+                }
+                else {
+                    MessageBox(g_hMainWnd, L"Failed to suspend process", L"Error", MB_ICONERROR);
+                }
+            }
+            else {
+                MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+            }
+        }
+    }
+}
+
+// Функция для возобновления процесса
+void ResumeProcess() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    LVITEM lvi;
+    ZeroMemory(&lvi, sizeof(LVITEM));
+    lvi.iItem = selected;
+    lvi.mask = LVIF_PARAM;
+
+    if (!ListView_GetItem(g_hProcessList, &lvi)) {
+        return;
+    }
+
+    DWORD pid = (DWORD)lvi.lParam;
+
+    // Используем NtResumeProcess для возобновления
+    HMODULE hNtdll = GetModuleHandle(L"ntdll.dll");
+    if (hNtdll) {
+        typedef NTSTATUS(NTAPI* pNtResumeProcess)(HANDLE);
+        pNtResumeProcess NtResumeProcess = (pNtResumeProcess)GetProcAddress(hNtdll, "NtResumeProcess");
+
+        if (NtResumeProcess) {
+            HANDLE hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, pid);
+            if (hProcess) {
+                NTSTATUS status = NtResumeProcess(hProcess);
+                CloseHandle(hProcess);
+
+                if (NT_SUCCESS(status)) {
+                    UpdateStatusBar(L"Process resumed");
+                    RefreshProcessList();
+                }
+                else {
+                    MessageBox(g_hMainWnd, L"Failed to resume process", L"Error", MB_ICONERROR);
+                }
+            }
+            else {
+                MessageBox(g_hMainWnd, L"Cannot open process", L"Error", MB_ICONERROR);
+            }
+        }
+    }
+}
+
+// Функция для анализа цепочки ожидания
+void AnalyzeWaitChain() {
+    int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
+    if (selected == -1) {
+        MessageBox(g_hMainWnd, L"Select a process first", L"Information", MB_ICONINFORMATION);
+        return;
+    }
+
+    MessageBox(g_hMainWnd,
+        L"Wait chain analysis is a complex feature that requires additional system APIs.\n"
+        L"This feature is planned for future versions.",
+        L"Information",
+        MB_ICONINFORMATION);
+}
+
+// Функции для настроек отображения ресурсов
+void SetResourceDisplayMode(int mode) {
+    switch (mode) {
+    case IDM_RES_MEMORY_PERCENT:
+        g_appState.resourceDisplay.memoryAsPercent = true;
+        UpdateStatusBar(L"Memory display set to percentages");
+        break;
+    case IDM_RES_MEMORY_VALUES:
+        g_appState.resourceDisplay.memoryAsPercent = false;
+        UpdateStatusBar(L"Memory display set to values");
+        break;
+    case IDM_RES_DISK_PERCENT:
+        g_appState.resourceDisplay.diskAsPercent = true;
+        UpdateStatusBar(L"Disk display set to percentages");
+        break;
+    case IDM_RES_DISK_VALUES:
+        g_appState.resourceDisplay.diskAsPercent = false;
+        UpdateStatusBar(L"Disk display set to values");
+        break;
+    case IDM_RES_NETWORK_PERCENT:
+        g_appState.resourceDisplay.networkAsPercent = true;
+        UpdateStatusBar(L"Network display set to percentages");
+        break;
+    case IDM_RES_NETWORK_VALUES:
+        g_appState.resourceDisplay.networkAsPercent = false;
+        UpdateStatusBar(L"Network display set to values");
+        break;
+    case IDM_RES_ALL_PERCENT:
+        g_appState.resourceDisplay.memoryAsPercent = true;
+        g_appState.resourceDisplay.diskAsPercent = true;
+        g_appState.resourceDisplay.networkAsPercent = true;
+        UpdateStatusBar(L"All resources display set to percentages");
+        break;
+    case IDM_RES_ALL_VALUES:
+        g_appState.resourceDisplay.memoryAsPercent = false;
+        g_appState.resourceDisplay.diskAsPercent = false;
+        g_appState.resourceDisplay.networkAsPercent = false;
+        UpdateStatusBar(L"All resources display set to values");
+        break;
+    }
+
+    // Обновляем отображение
+    RefreshProcessList();
+}
+
+
 
 // AutoSizeListViewColumns
 void AutoSizeListViewColumns(HWND hListView) {
@@ -1928,13 +2551,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_CREATE:
         CreateMainWindowControls(hWnd);
         EnableDebugPrivilege();
-
-        // Запускаем реальное обновление
         StartRealTimeUpdates();
-
-        // Запускаем таймер для обновления UI
         SetTimer(hWnd, 1, UI_UPDATE_INTERVAL, NULL);
-
         UpdateStatusBar(L"Real-time monitoring started");
         break;
 
@@ -2005,6 +2623,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (wParam == 1) {
             CheckForDataUpdates();
         }
+        break;
+
+    case WM_CLOSE:
+        if (g_appState.minimizeOnClose) {
+            ShowWindow(hWnd, SW_MINIMIZE);
+            return 0;
+        }
+        DestroyWindow(hWnd);
         break;
 
     case WM_NOTIFY:
@@ -2184,6 +2810,50 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
         }
 
+        case IDM_EXPAND_COLLAPSE:
+            ToggleExpandCollapse();
+            break;
+
+        case IDM_EFFICIENCY_MODE:
+            SetEfficiencyMode();
+            break;
+
+        case IDM_DEBUG_PROCESS:
+            DebugProcess();
+            break;
+
+        case IDM_DETAILED_INFO:
+            ShowDetailedInfo();
+            break;
+
+        case IDM_RESTART:
+            RestartProcess();
+            break;
+
+        case IDM_SUSPEND:
+            SuspendProcess();
+            break;
+
+        case IDM_RESUME:
+            ResumeProcess();
+            break;
+
+        case IDM_ANALYZE_WAIT_CHAIN:
+            AnalyzeWaitChain();
+            break;
+
+            // Обработка настроек отображения ресурсов
+        case IDM_RES_MEMORY_PERCENT:
+        case IDM_RES_MEMORY_VALUES:
+        case IDM_RES_DISK_PERCENT:
+        case IDM_RES_DISK_VALUES:
+        case IDM_RES_NETWORK_PERCENT:
+        case IDM_RES_NETWORK_VALUES:
+        case IDM_RES_ALL_PERCENT:
+        case IDM_RES_ALL_VALUES:
+            SetResourceDisplayMode(wmId);
+            break;
+
         case IDM_GOTOSERVICES: {
             int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
             if (selected == -1) {
@@ -2345,22 +3015,16 @@ void UpdateThreadProc() {
             // Уведомляем главный поток
             g_dataReadyCond.notify_one();
 
+            // Задержка перед следующим обновлением
+            for (int i = 0; i < 10; i++) {
+                if (g_updateThreadStopRequest.load()) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
         catch (const std::exception& e) {
-            OutputDebugStringA("Error in update thread: ");
-            OutputDebugStringA(e.what());
-            OutputDebugStringA("\n");
-        }
-
-        // Ожидание с проверкой флага остановки
-        for (int i = 0; i < 100; i++) {  // Упрощенная версия ожидания
-            if (g_updateThreadStopRequest.load()) {
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Обработка ошибок в потоке
         }
     }
-
     g_updateThreadRunning.store(false);
 }
 
@@ -2376,12 +3040,8 @@ void StartRealTimeUpdates() {
     try {
         g_updateThread = std::thread(UpdateThreadProc);
     }
-    catch (const std::exception& e) {
+    catch (...) {
         g_updateThreadRunning.store(false);
-        MessageBox(g_hMainWnd,
-            L"Failed to start real-time updates.",
-            L"Warning",
-            MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -2392,7 +3052,6 @@ void StopRealTimeUpdates() {
     }
 
     g_updateThreadStopRequest.store(true);
-    g_dataReadyCond.notify_all();
 
     if (g_updateThread.joinable()) {
         try {
@@ -2406,7 +3065,7 @@ void StopRealTimeUpdates() {
     g_updateThreadRunning.store(false);
 }
 
-// Проверка обновлений данных и обновление UI
+// Проверка обновлений данных и обновление UI - ИСПРАВЛЕНА
 void CheckForDataUpdates() {
     static DWORD lastUiUpdate = 0;
     DWORD currentTick = GetTickCount();

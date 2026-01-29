@@ -44,11 +44,34 @@
 #define IDM_PRIORITY_BELOWNORMAL 2128
 #define IDM_PRIORITY_IDLE        2129
 
+// Новые функции для процессов
+#define IDM_EXPAND_COLLAPSE      2130      // Развернуть/Свернуть
+#define IDM_RESOURCE_VALUES      2131      // Значения ресурсов
+#define IDM_EFFICIENCY_MODE      2132      // Режим эффективности
+#define IDM_DEBUG_PROCESS        2133      // Отладка процесса
+#define IDM_DETAILED_INFO        2134      // Подробно (детальная информация)
+#define IDM_RESTART              2135      // Перезапустить процесс
+#define IDM_SUSPEND              2136      // Приостановить процесс
+#define IDM_RESUME               2137      // Возобновить процесс
+#define IDM_ANALYZE_WAIT_CHAIN   2138      // Анализ цепочки ожидания
+
+// Подменю для значений ресурсов
+#define IDM_RES_MEMORY_PERCENT   2140      // Память в процентах
+#define IDM_RES_MEMORY_VALUES    2141      // Память в значениях
+#define IDM_RES_DISK_PERCENT     2142      // Диск в процентах
+#define IDM_RES_DISK_VALUES      2143      // Диск в значениях
+#define IDM_RES_NETWORK_PERCENT  2144      // Сеть в процентах
+#define IDM_RES_NETWORK_VALUES   2145      // Сеть в значениях
+#define IDM_RES_ALL_VALUES       2146      // Все в значениях
+#define IDM_RES_ALL_PERCENT      2147      // Все в процентах
+
 // Диалоги
 #define IDD_PROPERTIES_DIALOG    3000
 #define IDD_EXPORT_DIALOG        3001
 #define IDD_RUNTASK_DIALOG       3002
 #define IDD_AFFINITY_DIALOG      3003
+#define IDD_DETAILED_INFO_DIALOG 3004      // Новый диалог для детальной информации
+#define IDD_DEBUG_DIALOG         3005      // Диалог для отладки
 
 // Элементы диалога свойств
 #define IDC_PROP_NAME            3001
@@ -104,5 +127,23 @@
 
 // Меню
 #define IDR_MAIN_MENU            4003
+
+// Новые элементы для диалога детальной информации
+#define IDC_PROP_HANDLES         4004
+#define IDC_PROP_GDI_OBJECTS     4005
+#define IDC_PROP_USER_OBJECTS    4006
+#define IDC_PROP_IO_COUNTERS     4007
+#define IDC_PROP_WINDOW_TITLE    4008
+#define IDC_PROP_DEP_STATUS      4009
+#define IDC_PROP_ASLR_STATUS     4010
+#define IDC_PROP_ENVIRONMENT     4011
+
+// Новые элементы для диалога отладки
+#define IDC_DEBUG_PROC_NAME      4012
+#define IDC_DEBUG_PID            4013
+#define IDC_DEBUG_ATTACH         4014
+#define IDC_DEBUG_DETACH         4015
+#define IDC_DEBUG_BREAK          4016
+#define IDC_DEBUG_CONTINUE       4017
 
 #endif // _RESOURCE_H_

@@ -1,6 +1,10 @@
 // ProcessMonitor.h - обновленная версия
 #pragma once
 
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601  // Windows 7
+#endif
+
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -84,6 +88,9 @@
 #define IDD_RUNTASK_DIALOG       3002
 #define IDD_AFFINITY_DIALOG      3003
 
+
+
+
 // Структура для истории CPU
 struct CPUHistory {
     ULONGLONG lastKernel = 0;
@@ -112,6 +119,15 @@ struct ProcessInfo {
     FILETIME userTime;
     double cpuUsage;
     HANDLE hProcess; // Для манипуляций с процессом
+    ULONGLONG peakWorkingSetSize = 0;
+    ULONGLONG peakPagefileUsage = 0;
+    DWORD handleCount = 0;
+    DWORD gdiObjects = 0;
+    DWORD userObjects = 0;
+    std::wstring windowTitle;
+    std::wstring depStatus;
+    std::wstring aslrStatus;
+    std::wstring environment;
 };
 
 // App state structure
@@ -124,6 +140,16 @@ struct AppState {
     BOOL alwaysOnTop = FALSE;
     BOOL showAllUsers = TRUE;
     BOOL minimizeOnClose = FALSE;
+
+    struct {
+        bool memoryAsPercent = false;
+        bool diskAsPercent = false;
+        bool networkAsPercent = false;
+    } resourceDisplay;
+
+    // Другие настройки
+    bool efficiencyMode = false;
+    bool detailedView = false;
 };
 
 // Dialog producers
@@ -132,6 +158,12 @@ INT_PTR CALLBACK ExportDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 INT_PTR CALLBACK RunTaskDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK AffinityDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 INT_PTR CALLBACK AboutDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+// Диалоговые процедуры
+INT_PTR CALLBACK RunTaskDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK AffinityDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK AboutDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK DetailedInfoDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+INT_PTR CALLBACK DebugDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 
 const DWORD UI_UPDATE_INTERVAL = 500;
 
@@ -185,15 +217,30 @@ void RestartAsAdministrator();
 void AnalyzeWaitChain(); // Анализ цепочки ожидания
 void CreateMiniDump(DWORD pid, const std::wstring& filePath);
 
-INT_PTR CALLBACK RunTaskDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
-INT_PTR CALLBACK AffinityDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
-INT_PTR CALLBACK AboutDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
-
 // Функции для обновления в реальном времени
 void StartRealTimeUpdates();
 void StopRealTimeUpdates();
 void CheckForDataUpdates();
 void UpdateThreadProc();
+
+// Новые функции для процессов
+void ToggleExpandCollapse();
+void ShowResourceValuesMenu();
+void SetEfficiencyMode();
+void DebugProcess();
+void ShowDetailedInfo();
+void RestartProcess();
+void SuspendProcess();
+void ResumeProcess();
+void AnalyzeWaitChain();
+
+// Настройки отображения ресурсов
+void SetResourceDisplayMode(int mode);
+void UpdateResourceDisplay();
+
+// Подменю ресурсов
+void CreateResourceValuesSubMenu(HMENU hMenu);
+
 
 BOOL CreateMiniDump(DWORD pid, const wchar_t* filePath);
 
@@ -219,3 +266,6 @@ extern std::mutex g_processDataMutex;
 extern std::condition_variable g_dataReadyCond;
 extern bool g_newDataAvailable;
 extern DWORD g_lastUpdateTick;
+
+extern bool g_isProcessTreeExpanded;
+extern bool g_efficiencyModeEnabled;
