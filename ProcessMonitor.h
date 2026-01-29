@@ -35,10 +35,7 @@
 #define IDC_SORT_COMBO 1009
 #define IDT_AUTOREFRESH_TIMER 1010
 
-// Constants for context menu - используем уже определенные в resource.h
-// ќни уже определены выше как 2100-2109
-
-// —труктура дл€ истории CPU
+// cpu using history
 struct CPUHistory {
     ULONGLONG lastKernel = 0;
     ULONGLONG lastUser = 0;

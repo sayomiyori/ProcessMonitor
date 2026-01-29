@@ -1,5 +1,5 @@
 ﻿#define WIN32_LEAN_AND_MEAN
-#define _WIN32_WINNT 0x0600  // Windows Vista для QueryFullProcessImageNameW
+#define _WIN32_WINNT 0x0600  // Windows Vista for QueryFullProcessImageNameW
 #include <windows.h>
 #include <commctrl.h>
 #include <psapi.h>
@@ -10,7 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
-#include <iomanip>  // Для std::setw, std::setfill
+#include <iomanip>  // For std::setw, std::setfill
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -48,6 +48,9 @@ std::map<DWORD, CPUHistory> g_cpuHistory;
 ULONGLONG g_totalMemory = 0;
 ULONGLONG g_availableMemory = 0;
 
+#define MIN_WINDOW_WIDTH 800
+#define MIN_WINDOW_HEIGHT 600
+
 // Helper macros for coordinates
 #define GET_X_LPARAM(lParam) ((int)(short)LOWORD(lParam))
 #define GET_Y_LPARAM(lParam) ((int)(short)HIWORD(lParam))
@@ -73,11 +76,11 @@ BOOL IsRunAsAdministrator() {
 
 // Entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Проверка прав администратора
+    // Checking administrator rights
     if (!IsRunAsAdministrator()) {
         wchar_t szPath[MAX_PATH];
         if (GetModuleFileName(NULL, szPath, ARRAYSIZE(szPath))) {
-            // Перезапуск с правами администратора
+            // Restarting with administrator rights
             SHELLEXECUTEINFO sei = { sizeof(sei) };
             sei.lpVerb = L"runas";
             sei.lpFile = szPath;
@@ -86,8 +89,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
             if (!ShellExecuteEx(&sei)) {
                 MessageBox(NULL,
-                    L"Программа требует прав администратора.\nЗапустите её от имени администратора.",
-                    L"Ошибка прав доступа",
+                    L"The program requires administrator rights. \nRun it as an administrator.",
+                    L"Access rights error",
                     MB_OK | MB_ICONERROR);
             }
             return 0;
@@ -143,7 +146,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
 
     g_hMainWnd = CreateWindowW(
         L"ProcessMonitorClass",
-        L"Монитор процессов Windows v2.0",
+        L"Windows Process Monitor v2.0",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, 0, 1200, 700,
         nullptr, nullptr, hInstance, nullptr);
@@ -157,7 +160,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow) {
     return TRUE;
 }
 
-// Функция завершения дерева процессов
+// Process tree completion function
 int KillProcessTreeRecursive(DWORD parentPid, BOOL killParent) {
     int killedCount = 0;
 
@@ -169,7 +172,7 @@ int KillProcessTreeRecursive(DWORD parentPid, BOOL killParent) {
     PROCESSENTRY32W pe;
     pe.dwSize = sizeof(PROCESSENTRY32W);
 
-    // Собираем список дочерних процессов
+    // Collecting a list of child processes
     std::vector<DWORD> childPids;
 
     if (Process32FirstW(snapshot, &pe)) {
@@ -180,12 +183,12 @@ int KillProcessTreeRecursive(DWORD parentPid, BOOL killParent) {
         } while (Process32NextW(snapshot, &pe));
     }
 
-    // Рекурсивно убиваем всех детей
+    // Recursively killing all children
     for (DWORD childPid : childPids) {
         killedCount += KillProcessTreeRecursive(childPid, TRUE);
     }
 
-    // Убиваем текущий процесс (если нужно)
+    // Killing the current process (if necessary)
     if (killParent) {
         HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, parentPid);
         if (hProcess) {
@@ -203,7 +206,7 @@ int KillProcessTreeRecursive(DWORD parentPid, BOOL killParent) {
 void KillProcessTree() {
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     if (selected == -1) {
-        MessageBox(g_hMainWnd, L"Select a process to complete the tree", L"Error", MB_ICONWARNING);
+        MessageBox(g_hMainWnd, L"Select a process to kill the tree", L"Error", MB_ICONWARNING);
         return;
     }
 
@@ -237,7 +240,7 @@ void KillProcessTree() {
     }
 }
 
-// Функция расчета использования CPU
+// CPU usage calculation function
 double CalculateCPUUsage(DWORD pid) {
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProcess) {
@@ -284,7 +287,7 @@ double CalculateCPUUsage(DWORD pid) {
     return cpuUsage;
 }
 
-// Функция экспорта в CSV
+// CSV export function
 BOOL ExportToCSV(const std::wstring& filename, const std::vector<ProcessInfo>& processes) {
     std::wofstream file(filename);
     if (!file.is_open()) {
@@ -309,7 +312,7 @@ BOOL ExportToCSV(const std::wstring& filename, const std::vector<ProcessInfo>& p
     return TRUE;
 }
 
-// Функция экспорта в TXT
+// Export to TXT
 BOOL ExportToTXT(const std::wstring& filename, const std::vector<ProcessInfo>& processes) {
     std::wofstream file(filename);
     if (!file.is_open()) {
@@ -339,7 +342,7 @@ BOOL ExportToTXT(const std::wstring& filename, const std::vector<ProcessInfo>& p
     return TRUE;
 }
 
-// Диалог экспорта
+//Export dialog
 INT_PTR CALLBACK ExportDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
     static int exportFormat = 0; // 0 = CSV, 1 = TXT
@@ -432,7 +435,7 @@ INT_PTR CALLBACK ExportDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
     return FALSE;
 }
 
-// Функция копирования в буфер обмена
+// CopyToClipboard func
 void CopyToClipboard(const std::wstring& text) {
     if (OpenClipboard(NULL)) {
         EmptyClipboard();
@@ -447,7 +450,7 @@ void CopyToClipboard(const std::wstring& text) {
     }
 }
 
-// Функция сортировки
+// Sort func
 void SortProcessList(std::vector<ProcessInfo>& processes, int column, BOOL ascending) {
     std::sort(processes.begin(), processes.end(),
         [column, ascending](const ProcessInfo& a, const ProcessInfo& b) {
@@ -481,7 +484,7 @@ void SortProcessList(std::vector<ProcessInfo>& processes, int column, BOOL ascen
         });
 }
 
-// Функция фильтрации
+// filter func
 void ApplyFilter(std::vector<ProcessInfo>& processes, const std::wstring& filter) {
     if (filter.empty()) {
         return;
@@ -509,7 +512,7 @@ void ApplyFilter(std::vector<ProcessInfo>& processes, const std::wstring& filter
     processes.erase(it, processes.end());
 }
 
-// Получение детальной информации о процессе
+// GetDetailedProcessInfo
 ProcessInfo GetDetailedProcessInfo(DWORD pid) {
     ProcessInfo info = {};
     info.pid = pid;
@@ -540,13 +543,13 @@ ProcessInfo GetDetailedProcessInfo(DWORD pid) {
 
         std::wstring path(MAX_PATH, L'\0');
 
-        // Используем GetModuleFileNameEx для получения пути
+        // Use GetModuleFileNameEx for getting path
         if (GetModuleFileNameEx(hProcess, NULL, &path[0], MAX_PATH)) {
             path.resize(wcslen(path.c_str()));
             info.fullPath = path;
         }
         else {
-            // Альтернативный способ для системных процессов
+            // alt method for sys process
             path.resize(MAX_PATH);
             if (GetProcessImageFileName(hProcess, &path[0], MAX_PATH)) {
                 path.resize(wcslen(path.c_str()));
@@ -575,7 +578,7 @@ ProcessInfo GetDetailedProcessInfo(DWORD pid) {
     return info;
 }
 
-// Получение командной строки процесса
+// GetProcessCommandLine
 std::wstring GetProcessCommandLine(DWORD pid) {
     std::wstring cmdLine = L"N/A";
 
@@ -629,7 +632,7 @@ std::wstring GetProcessCommandLine(DWORD pid) {
     return cmdLine;
 }
 
-// Получение уровня целостности процесса
+// GetProcessIntegrityLevel
 std::wstring GetProcessIntegrityLevel(DWORD pid) {
     std::wstring integrity = L"Unknown";
 
@@ -678,7 +681,7 @@ std::wstring GetProcessIntegrityLevel(DWORD pid) {
     return integrity;
 }
 
-// Форматирование времени
+// Formating time
 std::wstring FormatFileTime(FILETIME ft) {
     if (ft.dwLowDateTime == 0 && ft.dwHighDateTime == 0) {
         return L"N/A";
@@ -701,7 +704,7 @@ std::wstring FormatFileTime(FILETIME ft) {
     return ss.str();
 }
 
-// Форматирование размера памяти
+// Formating mem size
 std::wstring FormatMemorySize(ULONGLONG bytes) {
     const wchar_t* units[] = { L"B", L"KB", L"MB", L"GB", L"TB", L"PB" };
     double size = static_cast<double>(bytes);
@@ -725,7 +728,7 @@ std::wstring FormatMemorySize(ULONGLONG bytes) {
     return ss.str();
 }
 
-// Получение имени пользователя процесса
+// GetProcessUserName
 std::wstring GetProcessUserName(DWORD pid) {
     if (pid == 0) return L"SYSTEM (Idle)";
     if (pid == 4) return L"SYSTEM";
@@ -786,7 +789,7 @@ std::wstring GetProcessUserName(DWORD pid) {
     return username;
 }
 
-// Получение списка процессов
+// GetProcessesList
 std::vector<ProcessInfo> GetProcessesList() {
     std::vector<ProcessInfo> processes;
 
@@ -838,7 +841,7 @@ std::vector<ProcessInfo> GetProcessesList() {
     return processes;
 }
 
-// Диалог свойств процесса
+// PropertiesDialog
 INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
     static DWORD processPid = 0;
     static ProcessInfo procInfo;
@@ -877,7 +880,7 @@ INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM
 
         SetDlgItemInt(hDlg, IDC_PROP_THREADS, procInfo.threadCount, FALSE);
 
-        // Формируем строку памяти
+        // mem stream
         std::wstringstream memoryStream;
         memoryStream << L"Working Set: " << FormatMemorySize(procInfo.workingSetSize)
             << L"\nPrivate Bytes: " << FormatMemorySize(procInfo.privateBytes)
@@ -893,7 +896,7 @@ INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM
         SetDlgItemInt(hDlg, IDC_PROP_SESSION_ID, procInfo.sessionId, FALSE);
         SetDlgItemText(hDlg, IDC_PROP_INTEGRITY, procInfo.integrityLvl.c_str());
 
-        // Заголовок окна
+        // window title
         std::wstring title = L"Process Properties: " + procInfo.name +
             L" (PID: " + std::to_wstring(procInfo.pid) + L")";
         SetWindowText(hDlg, title.c_str());
@@ -916,7 +919,7 @@ INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM
     return FALSE;
 }
 
-// Отображение свойств процесса
+// ShowProcessProperties
 void ShowProcessProperties(HWND hParent) {
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     if (selected == -1) {
@@ -938,7 +941,7 @@ void ShowProcessProperties(HWND hParent) {
     }
 }
 
-// Отображение модулей выбранного процесса
+// ShowSelectedProcessModules
 void ShowSelectedProcessModules() {
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     if (selected == -1) {
@@ -966,11 +969,11 @@ void ShowSelectedProcessModules() {
     }
 }
 
-// Функция завершения выбранного процесса
+// KillSelectedProcess
 void KillSelectedProcess() {
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     if (selected == -1) {
-        MessageBox(g_hMainWnd, L"Select the process to complete",
+        MessageBox(g_hMainWnd, L"Select the process to kill",
             L"Error", MB_ICONWARNING);
         return;
     }
@@ -1022,7 +1025,7 @@ void KillSelectedProcess() {
     }
 }
 
-// Включение привилегий отладки
+// EnableDebugPrivilege
 BOOL EnableDebugPrivilege() {
     HANDLE hToken;
     TOKEN_PRIVILEGES tp;
@@ -1045,7 +1048,7 @@ BOOL EnableDebugPrivilege() {
     return result && GetLastError() == ERROR_SUCCESS;
 }
 
-// Обновление статус-бара
+//UpdateStatusBar
 void UpdateStatusBar(const wchar_t* text) {
     if (g_hStatusBar) {
         SendMessage(g_hStatusBar, SB_SETTEXT, 0, (LPARAM)text);
@@ -1075,7 +1078,7 @@ void UpdateStatusBar(const wchar_t* text) {
     }
 }
 
-// Контекстное меню
+// Context menu
 void ShowContextMenu(HWND hWnd, int x, int y) {
     HMENU hMenu = CreatePopupMenu();
     if (!hMenu) return;
@@ -1083,24 +1086,25 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     BOOL hasSelection = (selected != -1);
 
-    AppendMenu(hMenu, MF_STRING, IDM_REFRESH, L"Обновить");
+    AppendMenu(hMenu, MF_STRING, IDM_REFRESH, L"Refresh");
     AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
     if (hasSelection) {
-        AppendMenu(hMenu, MF_STRING, IDM_KILL, L"Завершить процесс");
-        AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"Завершить дерево процессов");
+        AppendMenu(hMenu, MF_STRING, IDM_KILL, L"Kill process");
+        AppendMenu(hMenu, MF_STRING, IDM_KILL_TREE, L"Kill process tree");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Свойства процесса");
-        AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Показать модули (DLL)");
+        AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Process properties");
+        AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show modules (DLL)");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hMenu, MF_STRING, IDM_COPYPID, L"Копировать PID");
-        AppendMenu(hMenu, MF_STRING, IDM_COPYNAME, L"Копировать имя");
-        AppendMenu(hMenu, MF_STRING, IDM_COPYPATH, L"Копировать путь");
+        AppendMenu(hMenu, MF_STRING, IDM_COPYPID, L"Copy PID");
+        AppendMenu(hMenu, MF_STRING, IDM_COPYNAME, L"Copy name");
+        AppendMenu(hMenu, MF_STRING, IDM_COPYPATH, L"Copy path");
     }
 
     AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-    AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Экспорт списка...");
-    AppendMenu(hMenu, MF_STRING, IDM_AUTOREFRESH, g_appState.autoRefresh ? L"Отключить автообновление" : L"Включить автообновление");
+    AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Export list...");
+    AppendMenu(hMenu, MF_STRING, IDM_AUTOREFRESH,
+        g_appState.autoRefresh ? L"Disable auto-refresh" : L"Enable auto-refresh");
 
     SetForegroundWindow(hWnd);
     UINT cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, x, y, 0, hWnd, NULL);
@@ -1112,7 +1116,17 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
     DestroyMenu(hMenu);
 }
 
-// Обновление списка процессов
+// AutoSizeListViewColumns
+void AutoSizeListViewColumns(HWND hListView) {
+    if (!hListView) return;
+
+    int columnCount = Header_GetItemCount(ListView_GetHeader(hListView));
+    for (int i = 0; i < columnCount; i++) {
+        ListView_SetColumnWidth(hListView, i, LVSCW_AUTOSIZE);
+    }
+}
+
+// RefreshProcessList
 void RefreshProcessList(HWND hList) {
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     DWORD selectedPid = 0;
@@ -1198,9 +1212,10 @@ void RefreshProcessList(HWND hList) {
     statusStream << L"Processes: " << g_processes.size()
         << L" (Filtered: " << displayList.size() << L")";
     UpdateStatusBar(statusStream.str().c_str());
+    AutoSizeListViewColumns(hList);
 }
 
-// Отображение модулей процесса
+// ShowProcessModules
 void ShowProcessModules(HWND hList, DWORD pid) {
     ListView_DeleteAllItems(hList);
 
@@ -1233,9 +1248,17 @@ void ShowProcessModules(HWND hList, DWORD pid) {
     }
 }
 
-// Включение/выключение автообновления
+// ToggleAutoRefresh
 void ToggleAutoRefresh() {
     g_appState.autoRefresh = !g_appState.autoRefresh;
+
+    // hAutoRefreshBtn
+    HWND hAutoRefreshBtn = GetDlgItem(g_hMainWnd, IDC_AUTOREFRESH_BTN);
+    if (hAutoRefreshBtn) {
+        SetWindowText(hAutoRefreshBtn,
+            g_appState.autoRefresh ? L"Stop auto-refresh" : L"Auto-refresh");
+    }
+
     if (g_appState.autoRefresh) {
         SetTimer(g_hMainWnd, IDT_AUTOREFRESH_TIMER, g_appState.refreshInterval, NULL);
         UpdateStatusBar(L"Auto-refresh: ON");
@@ -1246,7 +1269,7 @@ void ToggleAutoRefresh() {
     }
 }
 
-// Применение фильтра
+// ApplyFilter
 void ApplyFilterToUI() {
     std::wstring filter(256, L'\0');
     GetWindowText(g_hFilterEdit, &filter[0], 256);
@@ -1255,66 +1278,78 @@ void ApplyFilterToUI() {
     RefreshProcessList(g_hProcessList);
 }
 
-// Обновление сортировки
+// UpdateSorting
 void UpdateSorting() {
     RefreshProcessList(g_hProcessList);
 }
 
-// Применение стилей к ListView
+// ApplyListViewStyle
 void ApplyListViewStyle(HWND hListView) {
-    // Используем стандартные стили, так как LVS_EX_AUTOSIZECOLUMNS не существует
+    // Using standart styles, bcs LVS_EX_AUTOSIZECOLUMNS not exist
     ListView_SetExtendedListViewStyle(hListView,
         LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 }
 
-// Создание элементов управления главного окна
+// CreateMainWindowControls
 void CreateMainWindowControls(HWND hWnd) {
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
 
+
+    // Instrument panel
+    int buttonHeight = 30;
+    int buttonSpacing = 10;
+    int panelHeight = 40;
+
     HWND hButtonPanel = CreateWindow(L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        0, 0, rcClient.right, 40,
+        0, 0, rcClient.right, panelHeight,
         hWnd, (HMENU)1000, g_hInstance, NULL);
 
-    int x = 10;
-    CreateWindow(L"BUTTON", L"Обновить",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, 5, 80, 30, hWnd, (HMENU)IDC_REFRESH_BTN,
-        g_hInstance, NULL);
-    x += 90;
 
-    CreateWindow(L"BUTTON", L"Завершить",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, 5, 80, 30, hWnd, (HMENU)IDC_KILL_BTN,
-        g_hInstance, NULL);
-    x += 90;
 
-    CreateWindow(L"BUTTON", g_appState.autoRefresh ? L"Стоп автообновление" : L"Автообновление",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, 5, 120, 30, hWnd, (HMENU)IDC_AUTOREFRESH_BTN,
-        g_hInstance, NULL);
-    x += 130;
+    int x = buttonSpacing;
+    int y = (panelHeight - buttonHeight) / 2;
 
-    // Поле фильтра
-    CreateWindow(L"STATIC", L"Фильтр:", WS_CHILD | WS_VISIBLE,
-        x, 10, 40, 20, hWnd, NULL, g_hInstance, NULL);
-    x += 45;
+
+    CreateWindow(L"BUTTON", L"Refresh",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, 80, buttonHeight, hWnd, (HMENU)IDC_REFRESH_BTN,
+        g_hInstance, NULL);
+    x += 80 + buttonSpacing;
+
+    CreateWindow(L"BUTTON", L"Kill",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, 80, buttonHeight, hWnd, (HMENU)IDC_KILL_BTN,
+        g_hInstance, NULL);
+    x += 80 + buttonSpacing;
+
+    CreateWindow(L"BUTTON", g_appState.autoRefresh ? L"Stop auto-refresh" : L"Auto-refresh",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, 120, buttonHeight, hWnd, (HMENU)IDC_AUTOREFRESH_BTN,
+        g_hInstance, NULL);
+    x += 120 + buttonSpacing;
+
+    // Filter group
+    CreateWindow(L"STATIC", L"Filter:",
+        WS_CHILD | WS_VISIBLE,
+        x, y + 3, 35, 20, hWnd, NULL, g_hInstance, NULL);
+    x += 35;
 
     g_hFilterEdit = CreateWindow(L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-        x, 5, 150, 30, hWnd, (HMENU)IDC_FILTER_EDIT,
+        x, y, 150, buttonHeight, hWnd, (HMENU)IDC_FILTER_EDIT,
         g_hInstance, NULL);
-    x += 160;
+    x += 150 + buttonSpacing;
 
-    CreateWindow(L"BUTTON", L"Поиск",
+    CreateWindow(L"BUTTON", L"Search",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        x, 5, 80, 30, hWnd, (HMENU)IDC_SEARCH_BTN,
+        x, y, 80, buttonHeight, hWnd, (HMENU)IDC_SEARCH_BTN,
         g_hInstance, NULL);
 
     g_hTabControl = CreateWindowEx(0, WC_TABCONTROL, L"",
         WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
-        0, 40, rcClient.right, rcClient.bottom - 60,
+        0, panelHeight, rcClient.right, rcClient.bottom - panelHeight - 20,
         hWnd, (HMENU)IDC_TAB_CONTROL,
         g_hInstance, NULL);
 
@@ -1331,6 +1366,7 @@ void CreateMainWindowControls(HWND hWnd) {
     GetClientRect(g_hTabControl, &rcTab);
     TabCtrl_AdjustRect(g_hTabControl, FALSE, &rcTab);
 
+    // ListView for processes
     g_hProcessList = CreateWindowEx(0, WC_LISTVIEW, L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
         rcTab.left, rcTab.top,
@@ -1341,17 +1377,18 @@ void CreateMainWindowControls(HWND hWnd) {
 
     ApplyListViewStyle(g_hProcessList);
 
+    // Columns ListView 
     struct ColumnInfo {
         const wchar_t* name;
         int width;
     } columns[] = {
-        { L"PID", 80 },
+        { L"PID", 70 },
         { L"Process Name", 200 },
         { L"User", 150 },
-        { L"Memory (MB)", 100 },
-        { L"Threads", 80 },
-        { L"CPU %", 80 },
-        { L"Path", 350 }
+        { L"Memory (MB)", 90 },
+        { L"Threads", 70 },
+        { L"CPU %", 70 },
+        { L"Path", 400 }
     };
 
     LVCOLUMN lvc = { 0 };
@@ -1365,6 +1402,7 @@ void CreateMainWindowControls(HWND hWnd) {
         ListView_InsertColumn(g_hProcessList, i, &lvc);
     }
 
+    // ListView for moduls
     g_hModuleList = CreateWindowEx(0, WC_LISTVIEW, L"",
         WS_CHILD | WS_BORDER | LVS_REPORT,
         rcTab.left, rcTab.top,
@@ -1385,6 +1423,7 @@ void CreateMainWindowControls(HWND hWnd) {
         ListView_InsertColumn(g_hModuleList, i, &lvc);
     }
 
+    // Performance window
     g_hPerformanceWnd = CreateWindow(L"STATIC", L"Performance metrics will be displayed here",
         WS_CHILD | WS_BORDER | SS_CENTER,
         rcTab.left, rcTab.top,
@@ -1395,23 +1434,28 @@ void CreateMainWindowControls(HWND hWnd) {
     ShowWindow(g_hModuleList, SW_HIDE);
     ShowWindow(g_hPerformanceWnd, SW_HIDE);
 
+    // status bar
     g_hStatusBar = CreateWindowEx(0, STATUSCLASSNAME, NULL,
         WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
         0, 0, 0, 0, hWnd, NULL, g_hInstance, NULL);
 
+    // status bar parts
     int parts[] = { 200, 400, 600, 800, -1 };
     SendMessage(g_hStatusBar, SB_SETPARTS, 5, (LPARAM)parts);
-
-
-    if (!g_hStatusBar) {
-        // Обработка ошибки создания статус-бара
-        MessageBox(hWnd, L"Failed to create status bar", L"Error", MB_OK | MB_ICONERROR);
-    }
 }
 
-// Основная процедура окна
+// Main window procedur
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+
+    case WM_GETMINMAXINFO:
+    {
+        LPMINMAXINFO pMMI = (LPMINMAXINFO)lParam;
+        pMMI->ptMinTrackSize.x = MIN_WINDOW_WIDTH;
+        pMMI->ptMinTrackSize.y = MIN_WINDOW_HEIGHT;
+        return 0;
+    }
+
     case WM_CREATE:
         CreateMainWindowControls(hWnd);
         EnableDebugPrivilege();
@@ -1424,64 +1468,77 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         RECT rcClient;
         GetClientRect(hWnd, &rcClient);
 
-        HDWP hdwp = BeginDeferWindowPos(5);
-        if (!hdwp) {
-            // Если BeginDeferWindowPos не удался, выходим
-            break;
-        }
+        if (rcClient.right < MIN_WINDOW_WIDTH) rcClient.right = MIN_WINDOW_WIDTH;
+        if (rcClient.bottom < MIN_WINDOW_HEIGHT) rcClient.bottom = MIN_WINDOW_HEIGHT;
 
+        int panelHeight = 40;
+        int statusBarHeight = 20;
+
+        // Updating status bar
         if (g_hStatusBar) {
-            hdwp = DeferWindowPos(hdwp, g_hStatusBar, NULL,
-                0, rcClient.bottom - 20,
-                rcClient.right, 20,
-                SWP_NOZORDER);
+            SendMessage(g_hStatusBar, WM_SIZE, 0, 0);
+
+            
+            int parts[] = {
+                rcClient.right / 4,
+                rcClient.right / 2,
+                rcClient.right * 3 / 4,
+                rcClient.right - 100,
+                -1
+            };
+            SendMessage(g_hStatusBar, SB_SETPARTS, 5, (LPARAM)parts);
         }
 
+        // Updating instrument panel
         HWND hButtonPanel = GetDlgItem(hWnd, 1000);
         if (hButtonPanel) {
-            hdwp = DeferWindowPos(hdwp, hButtonPanel, NULL,
-                0, 0,
-                rcClient.right, 40,
-                SWP_NOZORDER);
+            SetWindowPos(hButtonPanel, NULL, 0, 0, rcClient.right, panelHeight, SWP_NOZORDER);
         }
 
+        // Updating Tab Control
         if (g_hTabControl) {
-            hdwp = DeferWindowPos(hdwp, g_hTabControl, NULL,
-                0, 40,
-                rcClient.right,
-                rcClient.bottom - 60,
+            SetWindowPos(g_hTabControl, NULL,
+                0, panelHeight,
+                rcClient.right, rcClient.bottom - panelHeight - statusBarHeight,
                 SWP_NOZORDER);
 
+            
             RECT rcTab;
             GetClientRect(g_hTabControl, &rcTab);
             TabCtrl_AdjustRect(g_hTabControl, FALSE, &rcTab);
 
-            if (g_hProcessList) {
-                hdwp = DeferWindowPos(hdwp, g_hProcessList, NULL,
+            int tabWidth = rcTab.right - rcTab.left;
+            int tabHeight = rcTab.bottom - rcTab.top;
+
+            if (g_hProcessList && IsWindowVisible(g_hProcessList)) {
+                SetWindowPos(g_hProcessList, NULL,
                     rcTab.left, rcTab.top,
-                    rcTab.right - rcTab.left,
-                    rcTab.bottom - rcTab.top,
+                    tabWidth, tabHeight,
                     SWP_NOZORDER);
+
+                for (int i = 0; i < 7; i++) {
+                    ListView_SetColumnWidth(g_hProcessList, i, LVSCW_AUTOSIZE_USEHEADER);
+                }
             }
 
-            if (g_hModuleList) {
-                hdwp = DeferWindowPos(hdwp, g_hModuleList, NULL,
+            if (g_hModuleList && IsWindowVisible(g_hModuleList)) {
+                SetWindowPos(g_hModuleList, NULL,
                     rcTab.left, rcTab.top,
-                    rcTab.right - rcTab.left,
-                    rcTab.bottom - rcTab.top,
+                    tabWidth, tabHeight,
                     SWP_NOZORDER);
+
+                for (int i = 0; i < 2; i++) {
+                    ListView_SetColumnWidth(g_hModuleList, i, LVSCW_AUTOSIZE_USEHEADER);
+                }
             }
 
-            if (g_hPerformanceWnd) {
-                hdwp = DeferWindowPos(hdwp, g_hPerformanceWnd, NULL,
+            if (g_hPerformanceWnd && IsWindowVisible(g_hPerformanceWnd)) {
+                SetWindowPos(g_hPerformanceWnd, NULL,
                     rcTab.left, rcTab.top,
-                    rcTab.right - rcTab.left,
-                    rcTab.bottom - rcTab.top,
+                    tabWidth, tabHeight,
                     SWP_NOZORDER);
             }
         }
-
-        EndDeferWindowPos(hdwp);
         break;
     }
 
@@ -1499,7 +1556,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             if (lpnmh->code == LVN_ITEMCHANGED) {
                 LPNMLISTVIEW pnmv = (LPNMLISTVIEW)lParam;
                 if (pnmv->uNewState & LVIS_SELECTED) {
-                    // Можно добавить обработку выбора элемента
                 }
             }
             else if (lpnmh->code == LVN_COLUMNCLICK) {
@@ -1659,7 +1715,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
-// Экспорт списка процессов
+// ExportProcessList
 void ExportProcessList() {
     DialogBox(g_hInstance, MAKEINTRESOURCE(IDD_EXPORT_DIALOG), g_hMainWnd, ExportDialog);
 }

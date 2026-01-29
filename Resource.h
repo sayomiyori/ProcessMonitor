@@ -6,7 +6,7 @@
 #define IDC_STATIC              (-1)
 #endif
 
-// Контекстное меню
+// Context menu
 #define IDM_REFRESH              2100
 #define IDM_KILL                 2101
 #define IDM_KILL_TREE            2102
@@ -18,11 +18,11 @@
 #define IDM_COPYNAME             2108
 #define IDM_COPYPATH             2109
 
-// Диалоги
+// Dialog
 #define IDD_PROPERTIES_DIALOG    3000
 #define IDD_EXPORT_DIALOG        3001
 
-// Свойства процесса
+// Process prop
 #define IDC_PROP_NAME            3001
 #define IDC_PROP_PID             3002
 #define IDC_PROP_PARENT_PID      3003
@@ -38,7 +38,7 @@
 #define IDC_PROP_INTEGRITY       3013
 #define IDC_CLOSE_BTN            3014
 
-// Экспорт
+// Export
 #define IDC_EXPORT_CSV           3101
 #define IDC_EXPORT_TXT           3102
 #define IDC_EXPORT_PATH          3103
