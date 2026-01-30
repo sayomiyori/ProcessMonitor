@@ -269,3 +269,6 @@ extern DWORD g_lastUpdateTick;
 
 extern bool g_isProcessTreeExpanded;
 extern bool g_efficiencyModeEnabled;
+
+extern BOOL g_isContextMenuActive;
+extern bool g_contextMenuActive;

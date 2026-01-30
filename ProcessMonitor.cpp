@@ -54,6 +54,8 @@ HWND g_hMenuBar = NULL;
 std::map<DWORD, DWORD_PTR> g_processAffinity;
 bool g_isProcessTreeExpanded = false;
 bool g_efficiencyModeEnabled = false;
+bool g_contextMenuActive = false;
+
 
 // Многопоточные переменные
 std::thread g_updateThread;
@@ -113,6 +115,9 @@ INT_PTR CALLBACK DetailedInfoDialog(HWND hDlg, UINT message, WPARAM wParam, LPAR
 INT_PTR CALLBACK PropertiesDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 void KillProcessTree();
 void UpdateThreadProc();
+
+
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 BOOL IsRunAsAdministrator() {
@@ -1348,8 +1353,8 @@ std::vector<ProcessInfo> GetProcessesList() {
                     info.fullPath = path;
                 }
 
-                PROCESS_MEMORY_COUNTERS pmc;
-                if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
+                PROCESS_MEMORY_COUNTERS_EX pmc;
+                if ((PROCESS_MEMORY_COUNTERS*)&pmc) {
                     info.workingSetSize = pmc.WorkingSetSize;
                 }
 
@@ -1605,10 +1610,13 @@ void UpdateStatusBar(const wchar_t* text) {
     }
 }
 
+BOOL g_isContextMenuActive = FALSE;
+
 // Context menu
 void ShowContextMenu(HWND hWnd, int x, int y) {
     HMENU hMenu = CreatePopupMenu();
-    if (!hMenu) return;
+
+    if (!hMenu) return; 
 
     int selected = ListView_GetNextItem(g_hProcessList, -1, LVNI_SELECTED);
     BOOL hasSelection = (selected != -1);
@@ -1640,37 +1648,6 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
         // Режим эффективности
         AppendMenu(hMenu, MF_STRING, IDM_EFFICIENCY_MODE,
             g_efficiencyModeEnabled ? L"Disable Efficiency Mode" : L"Enable Efficiency Mode");
-
-        // Подменю Значения ресурсов
-        HMENU hResourceMenu = CreatePopupMenu();
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_MEMORY_PERCENT,
-            g_appState.resourceDisplay.memoryAsPercent ? L"✓ Memory (Percentages)" : L"Memory (Percentages)");
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_MEMORY_VALUES,
-            !g_appState.resourceDisplay.memoryAsPercent ? L"✓ Memory (Values)" : L"Memory (Values)");
-        AppendMenu(hResourceMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_DISK_PERCENT,
-            g_appState.resourceDisplay.diskAsPercent ? L"✓ Disk (Percentages)" : L"Disk (Percentages)");
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_DISK_VALUES,
-            !g_appState.resourceDisplay.diskAsPercent ? L"✓ Disk (Values)" : L"Disk (Values)");
-        AppendMenu(hResourceMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_NETWORK_PERCENT,
-            g_appState.resourceDisplay.networkAsPercent ? L"✓ Network (Percentages)" : L"Network (Percentages)");
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_NETWORK_VALUES,
-            !g_appState.resourceDisplay.networkAsPercent ? L"✓ Network (Values)" : L"Network (Values)");
-        AppendMenu(hResourceMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_ALL_PERCENT, L"All (Percentages)");
-        AppendMenu(hResourceMenu, MF_STRING, IDM_RES_ALL_VALUES, L"All (Values)");
-        AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hResourceMenu, L"Resource Values");
-
-        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-
-        // Анализ и диагностика
-        AppendMenu(hMenu, MF_STRING, IDM_DEBUG_PROCESS, L"Debug");
-        AppendMenu(hMenu, MF_STRING, IDM_ANALYZE_WAIT_CHAIN, L"Analyze Wait Chain");
-        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-
-        // Создание дампа
-        AppendMenu(hMenu, MF_STRING, IDM_CREATEDUMP, L"Create Memory Dump File");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
         // Управление процессом
@@ -1679,8 +1656,11 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
         AppendMenu(hMenu, MF_STRING, IDM_RESTART, L"Restart Process");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
+        // Создание дампа
+        AppendMenu(hMenu, MF_STRING, IDM_CREATEDUMP, L"Create Memory Dump File");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
         // Информация
-        AppendMenu(hMenu, MF_STRING, IDM_DETAILED_INFO, L"Detailed Information");
         AppendMenu(hMenu, MF_STRING, IDM_PROPERTIES, L"Properties");
         AppendMenu(hMenu, MF_STRING, IDM_MODULES, L"Show Modules (DLL)");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
@@ -1696,19 +1676,33 @@ void ShowContextMenu(HWND hWnd, int x, int y) {
         AppendMenu(hCopyMenu, MF_STRING, IDM_COPYNAME, L"Copy Process Name");
         AppendMenu(hCopyMenu, MF_STRING, IDM_COPYPATH, L"Copy Full Path");
         AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hCopyMenu, L"Copy");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
     }
 
-    AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+    // Общие пункты меню
     AppendMenu(hMenu, MF_STRING, IDM_CREATENEWTASK, L"Run New Task...");
     AppendMenu(hMenu, MF_STRING, IDM_EXPORT, L"Export List...");
+    AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hMenu, MF_STRING, IDM_REFRESH, L"Refresh");
+    AppendMenu(hMenu, MF_STRING, IDM_EXIT, L"Exit");
 
+    // Убедимся, что окно находится поверх всех
     SetForegroundWindow(hWnd);
 
-    // Показываем меню
+    // Устанавливаем флаг и отключаем таймер перед показом меню
+    g_contextMenuActive = true;
+    KillTimer(hWnd, 1);  // Отключаем таймер обновлений
+
+    // Показываем меню и получаем выбранную команду
     UINT cmd = TrackPopupMenuEx(hMenu,
         TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NOANIMATION,
         x, y, hWnd, NULL);
 
+    // Включаем таймер обратно и сбрасываем флаг после закрытия меню
+    SetTimer(hWnd, 1, UI_UPDATE_INTERVAL, NULL);
+    g_contextMenuActive = false;
+
+    // Обрабатываем выбранную команду
     if (cmd != 0) {
         SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
     }
@@ -2621,6 +2615,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
     case WM_TIMER:
         if (wParam == 1) {
+            if (g_contextMenuActive) {
+                return 0;  // Полностью блокируем обработку таймера, если меню активно
+            }
             CheckForDataUpdates();
         }
         break;
@@ -2676,11 +2673,63 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         break;
     }
 
+
+    case WM_RBUTTONUP:
+    {
+        // Проверяем, было ли нажатие на списке процессов
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        HWND hwndUnderMouse = ChildWindowFromPoint(hWnd, pt);
+
+        if (hwndUnderMouse == g_hProcessList) {
+            // Преобразуем в экранные координаты
+            ClientToScreen(hWnd, &pt);
+
+            // Находим элемент под курсором
+            POINT clientPt = pt;
+            ScreenToClient(g_hProcessList, &clientPt);
+
+            LVHITTESTINFO hitTestInfo = { 0 };
+            hitTestInfo.pt = clientPt;
+            int itemIndex = ListView_HitTest(g_hProcessList, &hitTestInfo);
+
+            // Если клик точно на элементе (не на заголовке или пустом месте)
+            if (itemIndex != -1 && (hitTestInfo.flags & LVHT_ONITEM)) {
+                ListView_SetItemState(g_hProcessList, -1, 0, LVIS_SELECTED);
+                ListView_SetItemState(g_hProcessList, itemIndex, LVIS_SELECTED, LVIS_SELECTED);
+                ListView_EnsureVisible(g_hProcessList, itemIndex, FALSE);
+
+                ShowContextMenu(hWnd, pt.x, pt.y);
+                return 0;
+            }
+        }
+        break;
+    }
+
     case WM_COMMAND:
     {
         int wmId = LOWORD(wParam);
 
         switch (wmId) {
+        case IDM_EFFICIENCY_MODE:
+            SetEfficiencyMode();
+            break;
+
+        case IDM_SUSPEND:
+            SuspendProcess();
+            break;
+
+        case IDM_RESUME:
+            ResumeProcess();
+            break;
+
+        case IDM_RESTART:
+            RestartProcess();
+            break;
+
+        case IDM_ANALYZE_WAIT_CHAIN:
+            AnalyzeWaitChain();
+            break;
+
         case IDC_KILL_BTN: {
             KillSelectedProcess();
             break;
@@ -2814,32 +2863,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             ToggleExpandCollapse();
             break;
 
-        case IDM_EFFICIENCY_MODE:
-            SetEfficiencyMode();
-            break;
-
         case IDM_DEBUG_PROCESS:
             DebugProcess();
             break;
 
         case IDM_DETAILED_INFO:
             ShowDetailedInfo();
-            break;
-
-        case IDM_RESTART:
-            RestartProcess();
-            break;
-
-        case IDM_SUSPEND:
-            SuspendProcess();
-            break;
-
-        case IDM_RESUME:
-            ResumeProcess();
-            break;
-
-        case IDM_ANALYZE_WAIT_CHAIN:
-            AnalyzeWaitChain();
             break;
 
             // Обработка настроек отображения ресурсов
@@ -2967,18 +2996,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         break;
     }
 
-    case WM_CONTEXTMENU:
+    case WM_CONTEXTMENU: {
         if ((HWND)wParam == g_hProcessList) {
             POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
-            if (pt.x == -1 && pt.y == -1) {
-                GetCursorPos(&pt);
-            }
+            // Конвертируем экранные координаты в клиентские для ListView
+            POINT clientPt = pt;
+            ScreenToClient(g_hProcessList, &clientPt);
 
-            ShowContextMenu(hWnd, pt.x, pt.y);
+            // Проверяем, кликнули ли на элемент
+            LVHITTESTINFO hitTestInfo = { 0 };
+            hitTestInfo.pt = clientPt;
+            int itemIndex = ListView_HitTest(g_hProcessList, &hitTestInfo);
+
+            if (itemIndex != -1) {
+                // Выделяем элемент, на который кликнули
+                ListView_SetItemState(g_hProcessList, -1, 0, LVIS_SELECTED);
+                ListView_SetItemState(g_hProcessList, itemIndex, LVIS_SELECTED, LVIS_SELECTED);
+                ListView_SetSelectionMark(g_hProcessList, itemIndex);
+
+                ShowContextMenu(hWnd, pt.x, pt.y);
+            }
             return 0;
         }
         break;
+    }
 
     case WM_DESTROY:
         StopRealTimeUpdates();
@@ -3075,6 +3117,10 @@ void CheckForDataUpdates() {
         return;
     }
 
+    if (g_contextMenuActive) {
+        return;
+    }
+
     // Пытаемся захватить мьютекс без блокировки
     std::unique_lock<std::mutex> lock(g_processDataMutex, std::try_to_lock);
 
@@ -3132,7 +3178,9 @@ void CheckForDataUpdates() {
 // Более эффективная версия с использованием LVITEM напрямую
 // Функция обновления ListView
 void RefreshListViewFromData(HWND hList, const std::vector<ProcessInfo>& processes) {
-    if (!hList || !IsWindow(hList)) return;
+    if (!hList || !IsWindow(hList) || g_contextMenuActive) return;
+
+    if (g_contextMenuActive) return;
 
     // Сохраняем выделение
     int selectedIndex = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
